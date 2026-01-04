@@ -3,9 +3,6 @@
 一个 **安全、简洁** 的 cloudflared Token Tunnel 自动部署脚本，  
 支持 **Alpine Linux（OpenRC）** 与 **Debian / Ubuntu（systemd）**。
 
-> ⚠️ 本脚本 **不会执行** 你粘贴的任何命令  
-> 👉 仅用于 **从字符串中提取 Tunnel Token**
-
 ---
 
 ## ✨ 特性

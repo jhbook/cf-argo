@@ -24,7 +24,7 @@
 | Debian | systemd |
 | Ubuntu | systemd |
 
----er
+
 
 ## 🚀 使用方法
 

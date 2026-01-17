@@ -86,7 +86,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$CLOUDFLARED_BIN tunnel--edge-ip-version auto run --token $CF_TOKEN
+ExecStart=$CLOUDFLARED_BIN tunnel --edge-ip-version auto run --token $CF_TOKEN
 Restart=always
 RestartSec=5
 StandardOutput=append:$LOG_FILE

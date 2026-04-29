@@ -58,7 +58,7 @@ name="cloudflared"
 description="Cloudflare Tunnel (Token mode)"
 
 command="$CLOUDFLARED_BIN"
-command_args="tunnel --edge-ip-version auto run --token $CF_TOKEN"
+command_args="tunnel --edge-ip-version 4 run --token $CF_TOKEN"
 command_background=true
 command_redirect="$LOG_FILE"
 pidfile="/run/cloudflared.pid"

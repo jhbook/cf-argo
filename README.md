@@ -37,3 +37,7 @@ bash <(curl -sL https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared-uninstall.sh)
 ```
+###  玩客云运行脚本
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflaredwky.sh)
+```

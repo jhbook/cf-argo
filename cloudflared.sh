@@ -34,7 +34,7 @@ LOG_FILE="/var/log/cloudflared.log"
 GITHUB_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
 
 # GitHub 代理
-GITHUB_PROXY="https://gitv6.4106666.xyz/"
+GITHUB_PROXY="https://git.jhbook.eu.org/"
 
 
 echo "============================================================"

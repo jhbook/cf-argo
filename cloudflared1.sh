@@ -37,10 +37,10 @@ if [ ! -x "$CLOUDFLARED_BIN" ]; then
     echo "正在下载 cloudflared..."
     if command -v wget >/dev/null 2>&1; then
         wget -O "$CLOUDFLARED_BIN" \
-            https://gitv6.4106666.xyz/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+            https://git.jhbook.eu.org/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
     else
         curl -L -o "$CLOUDFLARED_BIN" \
-            https://gitv6.4106666.xyz/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+            https://git.jhbook.eu.org/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
     fi
     chmod +x "$CLOUDFLARED_BIN"
 else

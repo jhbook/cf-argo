@@ -1,410 +1,256 @@
 #!/bin/bash
-set -e
 
 # ============================================================
-# Cloudflared Token Tunnel 通用自动部署脚本（改进版 v3）
+# Cloudflared Token Tunnel 管理菜单（v4）
 #
-# 支持系统：
-#   - Alpine Linux / OpenRC
-#   - Debian / Ubuntu / systemd
+# 基于 v3 改造，新增：
+#   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
+#   - 快捷命令 a：首次运行自动安装，之后输入 a 即可打开菜单
+#   - Token 持久化：保存到 /etc/cloudflared/token，重新部署时自动复用；
+#     卸载时一并清除，保证卸载干净
 #
-# 支持 CPU：
-#   - x86_64 / amd64
-#   - aarch64 / arm64
-#   - armv7l（armhf）
-#   - i386 / i686
-#
-# v3 变更说明：
-#   1. 采用 latest 最新版本下载，不再硬编码 SHA256 哈希
-#      （官方持续发版，固定哈希必然失效；且 GitHub API 匿名
-#        调用有 rate limit，动态拉取哈希在国内服务器也不可靠）
-#   2. 质量兜底改为三层：
-#      a. file 检查文件类型，拦截代理返回的 HTML 错误页
-#      b. 下载后打印实际 SHA256，方便与官方 release 页核对
-#      c. 最终运行 cloudflared --version 验证可执行性
-#   3. 修复 armv7l 架构误匹配 bug（原脚本匹配 arm 老版本，
-#      现正确匹配 armhf）
-#   4. 多下载源自动降级（主代理 → 官方直连 → 备用代理）
-#   5. Token 解析兼容两种输入（完整命令 / 纯 Token）
-#   6. 新增 logrotate 日志轮转配置
-#
-# 如需严格核对哈希，官方地址：
-#   https://github.com/cloudflare/cloudflared/releases
-#   展开对应版本的 Assets 即可看到各文件 SHA256
+# 保留 v3 全部能力：
+#   - Alpine / OpenRC、Debian / Ubuntu / systemd
+#   - x86_64 / aarch64 / armv7l(armhf) / i386
+#   - 多下载源自动降级（主代理 → 官方直连 → 备用代理）
+#   - file 类型检查 + 实际 SHA256 打印 + --version 可执行验证
+#   - logrotate 日志轮转
 # ============================================================
 
 
 # ============================================================
-# 基础配置
+# 常量
 # ============================================================
 
 CLOUDFLARED_BIN="/usr/local/bin/cloudflared"
 LOG_FILE="/var/log/cloudflared.log"
+TOKEN_FILE="/etc/cloudflared/token"
+OPENRC_SERVICE="/etc/init.d/cloudflared"
+SYSTEMD_SERVICE="/etc/systemd/system/cloudflared.service"
+LOGROTATE_CONF="/etc/logrotate.d/cloudflared"
 
-# GitHub 官方 Release 基础地址（latest 自动跟随最新版）
 GITHUB_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
-
-# 主代理（国内加速）
 GITHUB_PROXY="https://git.jhbook.eu.org/"
-# 备用代理
 GITHUB_PROXY_BACKUP="https://ghproxy.net/"
 
 
-echo "============================================================"
-echo "        Cloudflared Token Tunnel 自动部署（改进版 v3）"
-echo "============================================================"
+# ============================================================
+# 工具函数
+# ============================================================
+
+need_root() {
+    [ "$(id -u)" = "0" ] && return 0
+    echo "[-] 此操作需要 root 权限，请用 sudo 运行"
+    return 1
+}
+
+detect_init() {
+    if [ -d /run/openrc ]; then
+        INIT_TYPE="openrc"
+    elif command -v systemctl >/dev/null 2>&1; then
+        INIT_TYPE="systemd"
+    else
+        INIT_TYPE="unknown"
+    fi
+}
+
+detect_arch() {
+    local a
+    a="$(uname -m)"
+    case "$a" in
+        x86_64|amd64)      CF_FILE="cloudflared-linux-amd64" ;;
+        aarch64|arm64)     CF_FILE="cloudflared-linux-arm64" ;;
+        armv7l|armhf)      CF_FILE="cloudflared-linux-armhf" ;;
+        i386|i686)         CF_FILE="cloudflared-linux-386" ;;
+        *)
+            echo "[-] 不支持的 CPU 架构: $a"
+            return 1
+            ;;
+    esac
+    ARCH="$a"
+    return 0
+}
+
+# 确保快捷命令 a 存在
+ensure_shortcut() {
+    local self
+    self="$(readlink -f "$0")"
+    if [ "$self" != "/usr/local/bin/a" ]; then
+        if cp -f "$self" /usr/local/bin/a 2>/dev/null; then
+            chmod +x /usr/local/bin/a
+            echo "[+] 快捷命令已安装：以后直接输入 a 即可打开本菜单"
+        else
+            echo "[!] 无法写入 /usr/local/bin/a（权限不足），部署完成后请手动执行:"
+            echo "    sudo cp -f $self /usr/local/bin/a && sudo chmod +x /usr/local/bin/a"
+        fi
+    fi
+}
 
 
 # ============================================================
-# 1. 检测系统
+# 部署 / 更新 Cloudflared
 # ============================================================
 
-if [ -f /etc/alpine-release ]; then
-
-    echo "[+] 检测到 Alpine Linux"
-
-    apk add --no-cache curl file >/dev/null
-
-    INIT_TYPE="openrc"
-
-elif [ -f /etc/debian_version ]; then
-
-    echo "[+] 检测到 Debian / Ubuntu"
-
-    apt-get update -y
-    apt-get install -y curl file
-
-    INIT_TYPE="systemd"
-
-else
-
-    echo "[-] 不支持的系统类型（仅支持 Alpine / Debian / Ubuntu）"
-    exit 1
-
-fi
-
-echo "[+] Init 系统: $INIT_TYPE"
-
-
-# ============================================================
-# 2. 检测 CPU 架构（决定下载哪个文件）
-# ============================================================
-
-ARCH="$(uname -m)"
-
-case "$ARCH" in
-
-    # x86_64
-    x86_64|amd64)
-        CF_FILE="cloudflared-linux-amd64"
-        ;;
-
-    # ARM64
-    aarch64|arm64)
-        CF_FILE="cloudflared-linux-arm64"
-        ;;
-
-    # ARM 32位（armv7 统一使用 armhf 版本，修复原脚本误匹配 arm 老版本）
-    armv7l|armhf)
-        CF_FILE="cloudflared-linux-armhf"
-        ;;
-
-    # x86 32位
-    i386|i686)
-        CF_FILE="cloudflared-linux-386"
-        ;;
-
-    *)
-        echo "[-] 不支持的 CPU 架构: $ARCH"
-        exit 1
-        ;;
-
-esac
-
-echo "[+] CPU 架构: $ARCH"
-echo "[+] Cloudflared 文件: $CF_FILE"
-
-
-# ============================================================
-# 3. 生成下载地址（多源，按序自动降级）
-# ============================================================
-
-GITHUB_URL="${GITHUB_BASE}/${CF_FILE}"
-
-DOWNLOAD_SOURCES=(
-    "${GITHUB_PROXY}${GITHUB_URL}"       # 主代理
-    "${GITHUB_URL}"                       # 官方直连
-    "${GITHUB_PROXY_BACKUP}${GITHUB_URL}" # 备用代理
-)
-
-echo ""
-for i in "${!DOWNLOAD_SOURCES[@]}"; do
-    echo "[+] 下载源 $((i+1)): ${DOWNLOAD_SOURCES[$i]}"
-done
-
-
-# ============================================================
-# 4. 检查已有 Cloudflared
-# ============================================================
-
-NEED_DOWNLOAD=0
-
-if [ -x "$CLOUDFLARED_BIN" ]; then
+deploy() {
+    need_root || return 1
 
     echo ""
-    echo "[+] 检测到已有 Cloudflared"
+    echo "========== 部署 / 更新 Cloudflared =========="
 
-    if "$CLOUDFLARED_BIN" --version >/dev/null 2>&1; then
-
-        echo "[+] 已有 Cloudflared 可以正常运行"
-
-        "$CLOUDFLARED_BIN" --version
-
+    # ---- 系统检测 ----
+    if [ -f /etc/alpine-release ]; then
+        echo "[+] 检测到 Alpine Linux"
+        apk add --no-cache curl file >/dev/null
+    elif [ -f /etc/debian_version ]; then
+        echo "[+] 检测到 Debian / Ubuntu"
+        apt-get update -y >/dev/null 2>&1 || true
+        apt-get install -y curl file >/dev/null
     else
-
-        echo "[!] 已有 Cloudflared 无法正常运行"
-        echo "[!] 可能是 CPU 架构不匹配或文件损坏"
-
-        NEED_DOWNLOAD=1
-
-    fi
-
-else
-
-    echo "[!] 未检测到 Cloudflared"
-
-    NEED_DOWNLOAD=1
-
-fi
-
-
-# ============================================================
-# 5. 下载函数（优先 curl，降级 wget）
-# ============================================================
-
-download_one() {
-    local url="$1" out="$2"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fL --retry 2 --retry-delay 2 \
-            --connect-timeout 15 --max-time 300 \
-            -o "$out" "$url"
-    elif command -v wget >/dev/null 2>&1; then
-        wget --tries=2 --timeout=15 -O "$out" "$url"
-    else
+        echo "[-] 不支持的系统类型（仅支持 Alpine / Debian / Ubuntu）"
         return 1
     fi
-}
 
+    detect_init
+    detect_arch || return 1
+    echo "[+] Init 系统: $INIT_TYPE | CPU: $ARCH | 文件: $CF_FILE"
 
-# ============================================================
-# 6. 下载 Cloudflared（多源自动降级）
-# ============================================================
-
-if [ "$NEED_DOWNLOAD" = "1" ]; then
-
-    echo ""
-    echo "============================================================"
-    echo "下载 Cloudflared"
-    echo "============================================================"
-
-    TEMP_FILE="${CLOUDFLARED_BIN}.tmp"
-
-    rm -f "$TEMP_FILE"
-
-    DOWNLOAD_OK=0
-
-    for src in "${DOWNLOAD_SOURCES[@]}"; do
-
+    # ---- 检查已有二进制 ----
+    NEED_DOWNLOAD=1
+    if [ -x "$CLOUDFLARED_BIN" ] && "$CLOUDFLARED_BIN" --version >/dev/null 2>&1; then
         echo ""
-        echo "[+] 尝试下载源: $src"
+        echo "[+] 已安装版本: $("$CLOUDFLARED_BIN" --version)"
+        read -rp "是否重新下载最新版? [y/N] " ANS
+        case "$ANS" in
+            y|Y|yes|YES) NEED_DOWNLOAD=1 ;;
+            *) NEED_DOWNLOAD=0 ;;
+        esac
+    fi
 
-        if download_one "$src" "$TEMP_FILE"; then
+    # ---- 下载（多源自动降级）----
+    if [ "$NEED_DOWNLOAD" = "1" ]; then
+        echo ""
+        echo "---------- 下载 Cloudflared ----------"
 
-            echo "[+] 下载成功"
-            DOWNLOAD_OK=1
-            break
+        GITHUB_URL="${GITHUB_BASE}/${CF_FILE}"
+        DOWNLOAD_SOURCES=(
+            "${GITHUB_PROXY}${GITHUB_URL}"
+            "${GITHUB_URL}"
+            "${GITHUB_PROXY_BACKUP}${GITHUB_URL}"
+        )
 
-        else
+        TEMP_FILE="${CLOUDFLARED_BIN}.tmp"
+        rm -f "$TEMP_FILE"
 
-            echo "[!] 下载失败，切换下一个下载源..."
+        DOWNLOAD_OK=0
+        for src in "${DOWNLOAD_SOURCES[@]}"; do
+            echo "[+] 尝试下载源: $src"
+            if command -v curl >/dev/null 2>&1; then
+                curl -fL --retry 2 --retry-delay 2 --connect-timeout 15 --max-time 300 -o "$TEMP_FILE" "$src"
+            elif command -v wget >/dev/null 2>&1; then
+                wget --tries=2 --timeout=15 -O "$TEMP_FILE" "$src"
+            else
+                echo "[-] 系统没有 curl 或 wget"
+                return 1
+            fi
 
+            if [ -s "$TEMP_FILE" ]; then
+                DOWNLOAD_OK=1
+                echo "[+] 下载成功"
+                break
+            else
+                echo "[!] 下载失败，切换下一个下载源..."
+            fi
+        done
+
+        if [ "$DOWNLOAD_OK" != "1" ]; then
+            echo "[-] 所有下载源均失败"
+            echo "[!] 排查：外网连通 / DNS / 代理域名是否失效"
+            return 1
         fi
 
-    done
-
-    if [ "$DOWNLOAD_OK" != "1" ]; then
-
+        # file 类型检查（拦截 HTML 错误页）
+        FILE_TYPE="$(file "$TEMP_FILE" 2>/dev/null || true)"
         echo ""
-        echo "[-] 所有下载源均失败"
-        echo "[!] 网络排查建议："
-        echo "    1. 检查服务器能否访问外网: curl -I https://www.google.com"
-        echo "    2. 检查 DNS 是否正常: nslookup github.com"
-        echo "    3. 如代理域名已失效，修改脚本顶部 GITHUB_PROXY 变量"
-        echo "    4. 也可手动下载后重试: curl -L -o $CLOUDFLARED_BIN $GITHUB_URL"
+        echo "[+] 下载文件类型: $FILE_TYPE"
+        if echo "$FILE_TYPE" | grep -qiE "HTML|text"; then
+            echo "[-] 下载到的不是二进制文件（下载源返回错误页）"
+            rm -f "$TEMP_FILE"
+            return 1
+        fi
 
-        exit 1
-
-    fi
-
-    # 检查文件是否为空
-    if [ ! -s "$TEMP_FILE" ]; then
-
-        echo "[-] 下载文件为空"
-
-        rm -f "$TEMP_FILE"
-
-        exit 1
-
-    fi
-
-
-    # --------------------------------------------------------
-    # 检查文件类型（防止代理返回 HTML 错误页）
-    # --------------------------------------------------------
-
-    FILE_TYPE="$(file "$TEMP_FILE" 2>/dev/null || true)"
-
-    echo ""
-    echo "[+] 下载文件类型:"
-    echo "$FILE_TYPE"
-
-    if echo "$FILE_TYPE" | grep -qiE "HTML|text"; then
-
+        # 打印实际 SHA256（供与官方 Release 页核对）
         echo ""
-        echo "[-] 下载到的不是 Cloudflared 二进制文件"
-        echo "[!] 下载源可能返回了错误页面"
+        echo "[+] 文件 SHA256（可对照官方 Release 页核对）:"
+        sha256sum "$TEMP_FILE"
 
-        rm -f "$TEMP_FILE"
-
-        exit 1
-
+        # 安装
+        chmod +x "$TEMP_FILE"
+        mv -f "$TEMP_FILE" "$CLOUDFLARED_BIN"
+        chmod +x "$CLOUDFLARED_BIN"
+        echo "[+] Cloudflared 安装完成"
+    else
+        echo ""
+        echo "[+] 复用现有二进制，跳过下载"
     fi
 
-
-    # --------------------------------------------------------
-    # 打印实际 SHA256（供与官方 release 页面核对）
-    # --------------------------------------------------------
-
+    # ---- 最终可执行验证 ----
+    if ! "$CLOUDFLARED_BIN" --version >/dev/null 2>&1; then
+        echo "[-] Cloudflared 无法正常执行（架构不匹配或文件损坏）"
+        echo "    当前架构: $ARCH，应使用: $CF_FILE"
+        return 1
+    fi
     echo ""
-    echo "[+] 文件 SHA256（可对照官方 Release 页核对）:"
-    sha256sum "$TEMP_FILE"
+    echo "[+] 版本: $("$CLOUDFLARED_BIN" --version)"
 
+    # ---- 获取 Token（复用已保存 / 重新输入）----
+    CF_TOKEN=""
+    if [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
+        CF_TOKEN="$(cat "$TOKEN_FILE")"
+        echo "[+] 读取已保存的 Token（${#CF_TOKEN} 位）"
+        read -rp "使用已保存 Token 继续? [Y/n] " ANS
+        case "$ANS" in
+            n|N|no) CF_TOKEN="" ;;
+            *) ;;
+        esac
+    fi
 
-    # --------------------------------------------------------
-    # 安装 Cloudflared
-    # --------------------------------------------------------
+    if [ -z "$CF_TOKEN" ]; then
+        echo ""
+        echo "两种输入方式均可："
+        echo "  1. 完整命令: cloudflared service install eyJhIjoi..."
+        echo "  2. 纯 Token:  eyJhIjoi..."
+        read -rp "Cloudflared Token / 命令: " RAW_CMD || {
+            echo "[-] 未获取到输入"
+            return 1
+        }
 
-    chmod +x "$TEMP_FILE"
+        if echo "$RAW_CMD" | grep -q 'service[[:space:]]\+install'; then
+            CF_TOKEN="$(echo "$RAW_CMD" | sed -E 's/.*service[[:space:]]+install[[:space:]]+//' | tr -d '[:space:]')"
+        else
+            CF_TOKEN="$(echo "$RAW_CMD" | tr -d '[:space:]')"
+        fi
 
-    mv -f "$TEMP_FILE" "$CLOUDFLARED_BIN"
+        if [ -z "$CF_TOKEN" ]; then
+            echo "[-] 未能解析出 Tunnel Token"
+            return 1
+        fi
 
-    chmod +x "$CLOUDFLARED_BIN"
+        # 持久化 Token
+        mkdir -p "$(dirname "$TOKEN_FILE")"
+        chmod 700 "$(dirname "$TOKEN_FILE")"
+        echo "$CF_TOKEN" > "$TOKEN_FILE"
+        chmod 600 "$TOKEN_FILE"
+        echo "[+] Token 已保存到 $TOKEN_FILE（重装无需再输入）"
+    fi
+    echo "[+] Token 解析成功（${#CF_TOKEN} 位）"
 
-    echo ""
-    echo "[+] Cloudflared 安装完成"
+    # ---- 日志文件 ----
+    touch "$LOG_FILE"
+    chmod 644 "$LOG_FILE"
 
-else
-
-    echo ""
-    echo "[+] 已有 Cloudflared，跳过下载"
-
-fi
-
-
-# ============================================================
-# 7. 最终验证（可执行性验证，确保二进制可用）
-# ============================================================
-
-echo ""
-echo "============================================================"
-echo "验证 Cloudflared"
-echo "============================================================"
-
-if ! "$CLOUDFLARED_BIN" --version >/dev/null 2>&1; then
-
-    echo "[-] Cloudflared 无法正常执行"
-    echo "[!] 当前 CPU 架构: $ARCH"
-    echo "[!] 应使用文件: $CF_FILE"
-
-    exit 1
-
-fi
-
-"$CLOUDFLARED_BIN" --version
-
-
-# ============================================================
-# 8. 输入 Tunnel Token
-# ============================================================
-
-echo ""
-echo "============================================================"
-echo "请输入 Cloudflare Tunnel Token"
-echo "============================================================"
-
-echo ""
-echo "两种输入方式均可："
-echo "  1. 完整命令: cloudflared service install eyJhIjoi..."
-echo "  2. 纯 Token:  eyJhIjoi..."
-echo ""
-
-read -rp "Cloudflared Token / 命令: " RAW_CMD || {
-    echo "[-] 未获取到输入（非交互环境下无法输入）"
-    exit 1
-}
-
-
-# ============================================================
-# 9. 自动提取 Token（兼容两种输入）
-# ============================================================
-
-if echo "$RAW_CMD" | grep -q 'service[[:space:]]\+install'; then
-
-    CF_TOKEN="$(echo "$RAW_CMD" | sed -E 's/.*service[[:space:]]+install[[:space:]]+//')"
-
-else
-
-    CF_TOKEN="$(echo "$RAW_CMD" | tr -d '[:space:]')"
-
-fi
-
-if [ -z "$CF_TOKEN" ]; then
-
-    echo ""
-    echo "[-] 未能解析出 Tunnel Token"
-    echo "[!] 正确格式: cloudflared service install <TOKEN>"
-    echo "     或直接粘贴 <TOKEN>"
-
-    exit 1
-
-fi
-
-echo "[+] Token 解析成功 (长度: ${#CF_TOKEN})"
-
-
-# ============================================================
-# 10. 创建日志文件
-# ============================================================
-
-touch "$LOG_FILE"
-chmod 644 "$LOG_FILE"
-
-
-# ============================================================
-# 11. Alpine / OpenRC
-# ============================================================
-
-if [ "$INIT_TYPE" = "openrc" ]; then
-
-    echo ""
-    echo "============================================================"
-    echo "部署 OpenRC 服务"
-    echo "============================================================"
-
-    INIT_SCRIPT="/etc/init.d/cloudflared"
-
-
-    cat > "$INIT_SCRIPT" <<EOF
+    # ---- 部署服务 ----
+    if [ "$INIT_TYPE" = "openrc" ]; then
+        cat > "$OPENRC_SERVICE" <<EOF
 #!/sbin/openrc-run
 
 name="cloudflared"
@@ -422,60 +268,14 @@ depend() {
     need net
 }
 EOF
+        chmod +x "$OPENRC_SERVICE"
+        rc-update add cloudflared default >/dev/null 2>&1 || true
+        rc-service cloudflared stop >/dev/null 2>&1 || true
+        rc-service cloudflared start
+        rc-service cloudflared status || true
 
-    chmod +x "$INIT_SCRIPT"
-
-    # 加入开机启动（已存在不报错）
-    rc-update add cloudflared default >/dev/null 2>&1 || true
-
-    # 停止旧服务
-    rc-service cloudflared stop >/dev/null 2>&1 || true
-
-    # 启动服务
-    rc-service cloudflared start
-
-    echo ""
-    echo "============================================================"
-    echo "OpenRC 服务状态"
-    echo "============================================================"
-
-    rc-service cloudflared status || true
-
-    # logrotate（Alpine 若已安装则配置）
-    if command -v logrotate >/dev/null 2>&1; then
-
-        cat > /etc/logrotate.d/cloudflared <<LOGR
-$LOG_FILE {
-    daily
-    rotate 7
-    compress
-    delaycompress
-    missingok
-    notifempty
-    copytruncate
-}
-LOGR
-
-        echo "[+] logrotate 配置已写入 /etc/logrotate.d/cloudflared"
-
-    fi
-
-
-# ============================================================
-# 12. Debian / Ubuntu / systemd
-# ============================================================
-
-elif [ "$INIT_TYPE" = "systemd" ]; then
-
-    echo ""
-    echo "============================================================"
-    echo "部署 systemd 服务"
-    echo "============================================================"
-
-    SERVICE_FILE="/etc/systemd/system/cloudflared.service"
-
-
-    cat > "$SERVICE_FILE" <<EOF
+    elif [ "$INIT_TYPE" = "systemd" ]; then
+        cat > "$SYSTEMD_SERVICE" <<EOF
 [Unit]
 Description=Cloudflare Tunnel (Token mode)
 After=network-online.target
@@ -497,27 +297,18 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
+        systemctl daemon-reload
+        systemctl enable cloudflared
+        systemctl restart cloudflared
+        systemctl status cloudflared --no-pager || true
+    else
+        echo "[-] 无法识别 init 系统，服务未创建（二进制已就绪）"
+        return 1
+    fi
 
-    # 重新读取 systemd 配置
-    systemctl daemon-reload
-
-    # 设置开机启动
-    systemctl enable cloudflared
-
-    # 重启服务
-    systemctl restart cloudflared
-
-    echo ""
-    echo "============================================================"
-    echo "systemd 服务状态"
-    echo "============================================================"
-
-    systemctl status cloudflared --no-pager || true
-
-    # logrotate（Debian/Ubuntu 默认自带 logrotate）
+    # ---- logrotate ----
     if command -v logrotate >/dev/null 2>&1; then
-
-        cat > /etc/logrotate.d/cloudflared <<LOGR
+        cat > "$LOGROTATE_CONF" <<LOGR
 $LOG_FILE {
     daily
     rotate 7
@@ -528,51 +319,203 @@ $LOG_FILE {
     copytruncate
 }
 LOGR
-
-        echo "[+] logrotate 配置已写入 /etc/logrotate.d/cloudflared"
-
+        echo "[+] logrotate 配置已写入 $LOGROTATE_CONF"
     fi
 
-fi
+    echo ""
+    echo "[+] 部署完成！服务运行中，日志: tail -f $LOG_FILE"
+}
 
 
 # ============================================================
-# 13. 最终结果
+# 查看运行状态
 # ============================================================
 
-echo ""
-echo "============================================================"
-echo "Cloudflared Token Tunnel 部署完成"
-echo "============================================================"
+show_status() {
+    echo ""
+    echo "========== Cloudflared 运行状态 =========="
 
-echo "系统        : $INIT_TYPE"
-echo "CPU         : $ARCH"
-echo "Cloudflared : $CLOUDFLARED_BIN"
-echo "日志        : $LOG_FILE"
+    if [ -x "$CLOUDFLARED_BIN" ]; then
+        echo "[+] 二进制版本: $("$CLOUDFLARED_BIN" --version 2>/dev/null)"
+    else
+        echo "[-] 未安装 cloudflared（先选菜单 1 部署）"
+        return 0
+    fi
 
-echo ""
+    detect_init
+    echo ""
+    case "$INIT_TYPE" in
+        systemd)
+            systemctl status cloudflared --no-pager 2>/dev/null || echo "[-] 服务未创建/未运行"
+            ;;
+        openrc)
+            rc-service cloudflared status 2>/dev/null || echo "[-] 服务未创建/未运行"
+            ;;
+        *)
+            echo "[!] 无法识别 init 系统"
+            ;;
+    esac
 
-if [ "$INIT_TYPE" = "openrc" ]; then
+    echo ""
+    echo "---------- 最近日志 ----------"
+    if [ -f "$LOG_FILE" ]; then
+        tail -n 10 "$LOG_FILE" 2>/dev/null
+    else
+        echo "(暂无日志)"
+    fi
+}
 
-    echo "服务管理:"
-    echo "  启动: rc-service cloudflared start"
-    echo "  停止: rc-service cloudflared stop"
-    echo "  重启: rc-service cloudflared restart"
-    echo "  状态: rc-service cloudflared status"
 
-elif [ "$INIT_TYPE" = "systemd" ]; then
+# ============================================================
+# 重启服务
+# ============================================================
 
-    echo "服务管理:"
-    echo "  启动: systemctl start cloudflared"
-    echo "  停止: systemctl stop cloudflared"
-    echo "  重启: systemctl restart cloudflared"
-    echo "  状态: systemctl status cloudflared"
+restart_service() {
+    need_root || return 1
+    echo ""
+    echo "========== 重启 Cloudflared =========="
+    detect_init
+    case "$INIT_TYPE" in
+        systemd)
+            systemctl restart cloudflared
+            systemctl status cloudflared --no-pager || true
+            ;;
+        openrc)
+            rc-service cloudflared restart
+            rc-service cloudflared status || true
+            ;;
+        *)
+            echo "[-] 无法识别 init 系统"
+            return 1
+            ;;
+    esac
+}
 
-fi
 
-echo ""
-echo "日志:"
-echo "  tail -f $LOG_FILE"
+# ============================================================
+# 查看日志
+# ============================================================
 
-echo ""
-echo "============================================================"
+show_log() {
+    echo ""
+    echo "========== Cloudflared 日志（最近 50 行）=========="
+    if [ -f "$LOG_FILE" ]; then
+        tail -n 50 "$LOG_FILE"
+    else
+        echo "(暂无日志)"
+    fi
+}
+
+
+# ============================================================
+# 卸载 Cloudflared（保留 Token 文件，重装免输入）
+# ============================================================
+
+uninstall_cloudflared() {
+    need_root || return 1
+    echo ""
+    echo "========== 卸载 Cloudflared =========="
+
+    read -rp "确认卸载 cloudflared 及服务/日志配置? [y/N] " ANS
+    case "$ANS" in
+        y|Y|yes|YES) ;;
+        *) echo "已取消卸载"; return 0 ;;
+    esac
+
+    detect_init
+    case "$INIT_TYPE" in
+        openrc)
+            echo "[+] 停止并移除 OpenRC 服务..."
+            service cloudflared stop 2>/dev/null
+            rc-update del cloudflared default 2>/dev/null
+            rm -f "$OPENRC_SERVICE"
+            ;;
+        systemd)
+            echo "[+] 停止并移除 systemd 服务..."
+            systemctl stop cloudflared 2>/dev/null
+            systemctl disable cloudflared 2>/dev/null
+            rm -f "$SYSTEMD_SERVICE"
+            systemctl daemon-reload
+            ;;
+        unknown)
+            echo "[!] 未识别 init 系统，尝试清理常见服务文件..."
+            rm -f "$OPENRC_SERVICE" "$SYSTEMD_SERVICE"
+            command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload 2>/dev/null
+            ;;
+    esac
+
+    # 残留进程兜底
+    echo "[+] 清理残留进程..."
+    pkill -f "$CLOUDFLARED_BIN" 2>/dev/null
+    pkill -x cloudflared 2>/dev/null
+
+    # 通用清理
+    rm -f "$CLOUDFLARED_BIN"
+    rm -f "${CLOUDFLARED_BIN}.tmp"
+    rm -f "$LOG_FILE"
+    rm -f "$LOGROTATE_CONF"
+
+    # Token 一并清除，卸载即干净
+    rm -f "$TOKEN_FILE"
+    rmdir "$(dirname "$TOKEN_FILE")" 2>/dev/null || true
+    echo "[+] Token 文件已删除（/etc/cloudflared/token）"
+
+    echo ""
+    echo "[+] cloudflared 已彻底卸载，Cloudflare 面板 Tunnel 未受影响"
+}
+
+
+# ============================================================
+# 菜单
+# ============================================================
+
+show_menu() {
+    echo ""
+    echo "============================================"
+    echo "        Cloudflared 管理菜单 v4"
+    echo "============================================"
+    echo ""
+    echo "  1) 部署 / 更新 Cloudflared"
+    echo "  2) 查看运行状态"
+    echo "  3) 重启服务"
+    echo "  4) 查看日志（最近 50 行）"
+    echo "  5) 卸载 Cloudflared"
+    echo "  6) 重新安装快捷命令 a"
+    echo "  0) 退出"
+    echo ""
+}
+
+main() {
+    # 支持直接指定操作: a install / a status / a uninstall
+    case "${1:-}" in
+        install|deploy) deploy; exit $? ;;
+        status)         show_status; exit $? ;;
+        restart)        restart_service; exit $? ;;
+        log)            show_log; exit $? ;;
+        uninstall)      uninstall_cloudflared; exit $? ;;
+    esac
+
+    ensure_shortcut
+
+    while true; do
+        show_menu
+        read -rp "请选择 [0-6]: " CHOICE || CHOICE=""
+        case "$CHOICE" in
+            1) deploy ;;
+            2) show_status ;;
+            3) restart_service ;;
+            4) show_log ;;
+            5) uninstall_cloudflared ;;
+            6) ensure_shortcut ;;
+            0)
+                echo "再见！之后输入 a 即可随时打开菜单"
+                exit 0
+                ;;
+            *) echo "[!] 无效选项，请输入 0-6" ;;
+        esac
+        echo ""
+        read -rp "按回车返回菜单..." _ || true
+    done
+}
+
+main "$@"

@@ -41,3 +41,20 @@ bash <(curl -sL https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflaredwky.sh)
 ```
+
+## 🚀 jsDelivr加速脚本
+### 1️⃣ 运行脚本
+
+```bash
+bash <(curl -sL https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh)
+```
+### 2️⃣ 卸载脚本
+```bash
+bash <(curl -sL https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared-uninstall.sh)
+```
+###  玩客云运行脚本
+```bash
+bash <(curl -sL https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflaredwky.sh)
+```
+
+

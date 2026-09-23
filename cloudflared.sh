@@ -6,7 +6,7 @@
 # 基于 v3 改造，新增：
 #   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
 #   - 快捷命令 a：部署成功后自动安装，之后输入 a 即可打开菜单；
-#     进程替换/管道方式运行时自动从镜像（SCRIPT_MIRRORS 多源降级）下载安装
+#     统一从镜像（SCRIPT_MIRRORS 多源降级）顺序下载，不区分运行方式
 #   - Token 持久化：保存到 /etc/cloudflared/token，重新部署时自动复用；
 #     卸载时一并清除，保证卸载干净
 #   - 卸载时连同快捷命令 a（/usr/local/bin/a）一并删除，卸载即干净
@@ -31,16 +31,24 @@ OPENRC_SERVICE="/etc/init.d/cloudflared"
 SYSTEMD_SERVICE="/etc/systemd/system/cloudflared.service"
 LOGROTATE_CONF="/etc/logrotate.d/cloudflared"
 
+# 颜色
+_red='\033[0;31m'
+_green='\033[0;32m'
+_yellow='\033[0;33m'
+_plain='\033[0m'
+
 GITHUB_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
 GITHUB_PROXY="https://git.jhbook.eu.org/"
 GITHUB_PROXY_BACKUP="https://ghproxy.net/"
 
 # 自身镜像地址列表（进程替换/管道运行且无法复制自身时，按序尝试下载）
-# 第一个是 jsDelivr（国内快，但有 CDN 缓存延迟），第二个是 GitHub raw（即时最新）
+# 顺序策略：GitHub 代理加速（国内快+即时最新）优先，jsDelivr 其次，raw 直连兜底
 # 如果你 fork 了本脚本，请改成你自己的地址；也可运行时用环境变量覆盖：
 #   SCRIPT_MIRROR=https://你的地址 bash <(curl -sL ...)
 SCRIPT_MIRRORS=(
-    "${SCRIPT_MIRROR:-https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh}"
+    "${SCRIPT_MIRROR:-https://git.jhbook.eu.org/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh}"
+    "https://ghproxy.net/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
+    "https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh"
     "https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
 )
 
@@ -82,51 +90,30 @@ detect_arch() {
     return 0
 }
 
-# 确保快捷命令 a 存在
+# 确保快捷命令 a 存在（统一从镜像顺序下载，不区分运行方式）
 ensure_shortcut() {
-    local self
-    self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-
-    # 进程替换/管道执行时 $0 是伪文件（如 /root/pipe:[...]），无法复制
-    if [ ! -f "$self" ]; then
-        echo ""
-        echo "[!] 当前通过「进程替换/管道」运行，尝试从镜像下载快捷命令 a..."
-        for mirror in "${SCRIPT_MIRRORS[@]}"; do
-            echo "[+] 尝试镜像: $mirror"
-            TMP_A="$(mktemp /tmp/a_install.XXXXXX 2>/dev/null || echo /tmp/a_install.$$)"
-            if curl -fsSL --connect-timeout 15 --max-time 60 "$mirror" -o "$TMP_A" \
-                && [ -s "$TMP_A" ] \
-                && grep -q "Cloudflared 管理菜单" "$TMP_A"; then
-                if cp -f "$TMP_A" /usr/local/bin/a 2>/dev/null; then
-                    chmod +x /usr/local/bin/a
-                    rm -f "$TMP_A"
-                    echo "[+] 快捷命令 a 已安装：以后直接输入 a 即可打开本菜单"
-                    return 0
-                else
-                    echo "[!] 写入 /usr/local/bin/a 失败（需要 root 权限）"
-                    echo "    手动执行: sudo cp -f $TMP_A /usr/local/bin/a && sudo chmod +x /usr/local/bin/a"
-                    echo "    完成后可删除临时文件: rm -f $TMP_A"
-                    return 0
-                fi
+    for mirror in "${SCRIPT_MIRRORS[@]}"; do
+        TMP_A="$(mktemp /tmp/a_install.XXXXXX 2>/dev/null || echo /tmp/a_install.$$)"
+        if curl -fsSL --connect-timeout 15 --max-time 60 "$mirror" -o "$TMP_A" \
+            && [ -s "$TMP_A" ] \
+            && grep -q "Cloudflared 管理菜单" "$TMP_A"; then
+            if cp -f "$TMP_A" /usr/local/bin/a 2>/dev/null; then
+                chmod +x /usr/local/bin/a
+                rm -f "$TMP_A"
+                echo "[+] 快捷命令 a 已安装：以后直接输入 a 即可打开本菜单"
+                return 0
+            else
+                echo "[!] 写入 /usr/local/bin/a 失败（需要 root 权限）"
+                echo "    手动执行: sudo cp -f $TMP_A /usr/local/bin/a && sudo chmod +x /usr/local/bin/a"
+                echo "    完成后可删除临时文件: rm -f $TMP_A"
+                return 0
             fi
-            rm -f "$TMP_A"
-        done
-        echo "[!] 所有镜像均不可用或内容不完整，请手动执行："
-        echo "    curl -sL <脚本URL> -o /usr/local/bin/a && chmod +x /usr/local/bin/a"
-        echo ""
-        echo "    安装后直接输入 a 即可打开本菜单（无需重新部署）"
-        return 0
-    fi
-
-    if [ "$self" != "/usr/local/bin/a" ]; then
-        if cp -f "$self" /usr/local/bin/a 2>/dev/null; then
-            chmod +x /usr/local/bin/a
-            echo "[+] 快捷命令已安装：以后直接输入 a 即可打开本菜单"
-        else
-            echo "[!] 复制到 /usr/local/bin/a 失败，请手动执行："
-            echo "    sudo cp -f $self /usr/local/bin/a && sudo chmod +x /usr/local/bin/a"
         fi
-    fi
+        rm -f "$TMP_A"
+    done
+    echo "[!] 快捷命令 a 安装失败（所有镜像不可用或内容不完整），请手动执行："
+    echo "    curl -sL ${SCRIPT_MIRRORS[0]} -o /usr/local/bin/a && chmod +x /usr/local/bin/a"
+    return 0
 }
 
 
@@ -516,8 +503,68 @@ uninstall_cloudflared() {
 
 
 # ============================================================
+# 更新脚本（从镜像拉取最新版，替换 /usr/local/bin/a）
+# ============================================================
+
+update_script() {
+    need_root || return 1
+    echo ""
+    echo "========== 更新脚本 =========="
+    for mirror in "${SCRIPT_MIRRORS[@]}"; do
+        TMP_A="$(mktemp /tmp/a_update.XXXXXX 2>/dev/null || echo /tmp/a_update.$$)"
+        if curl -fsSL --connect-timeout 15 --max-time 60 "$mirror" -o "$TMP_A" \
+            && [ -s "$TMP_A" ] \
+            && grep -q "Cloudflared 管理菜单" "$TMP_A"; then
+            if cp -f "$TMP_A" /usr/local/bin/a 2>/dev/null; then
+                chmod +x /usr/local/bin/a
+                rm -f "$TMP_A"
+                echo "[+] 脚本已更新到最新版：/usr/local/bin/a"
+                echo "    重新输入 a 即可使用新版菜单"
+                return 0
+            else
+                echo "[!] 写入 /usr/local/bin/a 失败（需要 root 权限）"
+                rm -f "$TMP_A"
+                return 1
+            fi
+        fi
+        rm -f "$TMP_A"
+    done
+    echo "[!] 所有镜像不可用或内容不完整，脚本更新失败"
+    return 1
+}
+
+
+# ============================================================
 # 菜单
 # ============================================================
+
+# 获取运行状态：未安装 / 运行中(版本) / 已停止 / 未知
+sb_status() {
+    if [ ! -x "$CLOUDFLARED_BIN" ]; then
+        echo -e "${_yellow}未安装${_plain}"
+        return
+    fi
+    detect_init
+    case "$INIT_TYPE" in
+        systemd)
+            if systemctl is-active --quiet cloudflared 2>/dev/null; then
+                echo -e "${_green}运行中${_plain}（$("$CLOUDFLARED_BIN" --version 2>/dev/null | head -1)）"
+            else
+                echo -e "${_red}已停止${_plain}"
+            fi
+            ;;
+        openrc)
+            if rc-service cloudflared status 2>/dev/null | grep -q started; then
+                echo -e "${_green}运行中${_plain}（$("$CLOUDFLARED_BIN" --version 2>/dev/null | head -1)）"
+            else
+                echo -e "${_red}已停止${_plain}"
+            fi
+            ;;
+        *)
+            echo -e "${_yellow}未知${_plain}"
+            ;;
+    esac
+}
 
 show_menu() {
     echo ""
@@ -525,24 +572,28 @@ show_menu() {
     echo "        Cloudflared 管理菜单 v4"
     echo "============================================"
     echo ""
+    echo "  Cloudflared 状态：$(sb_status)"
+    echo ""
     echo "  1) 部署 / 更新 Cloudflared"
-    echo "  2) 查看运行状态"
-    echo "  3) 重启服务"
-    echo "  4) 查看日志（最近 50 行）"
-    echo "  5) 卸载 Cloudflared"
-    echo "  6) 重新安装快捷命令 a"
+    echo "  2) 重启服务"
+    echo "  3) 查看日志（最近 50 行）"
+    echo "  4) 卸载 Cloudflared"
+    echo "  5) 重新安装快捷命令 a"
+    echo "  6) 更新脚本（从镜像拉取最新版）"
     echo "  0) 退出"
     echo ""
 }
 
 main() {
-    # 支持直接指定操作: a install / a status / a uninstall
+    # 支持直接指定操作（关键词 或 数字菜单编号）: a install / a 1 / a 3 ...
     case "${1:-}" in
-        install|deploy) deploy; exit $? ;;
-        status)         show_status; exit $? ;;
-        restart)        restart_service; exit $? ;;
-        log)            show_log; exit $? ;;
-        uninstall)      uninstall_cloudflared; exit $? ;;
+        install|deploy|1)   deploy; exit $? ;;
+        status)             show_status; exit $? ;;
+        restart|2)          restart_service; exit $? ;;
+        log|3)              show_log; exit $? ;;
+        uninstall|4)        uninstall_cloudflared; exit $? ;;
+        5)                  ensure_shortcut; exit $? ;;
+        update|6)           update_script; exit $? ;;
     esac
 
     while true; do
@@ -550,11 +601,11 @@ main() {
         read -rp "请选择 [0-6]: " CHOICE || CHOICE=""
         case "$CHOICE" in
             1) deploy ;;
-            2) show_status ;;
-            3) restart_service ;;
-            4) show_log ;;
-            5) uninstall_cloudflared ;;
-            6) ensure_shortcut ;;
+            2) restart_service ;;
+            3) show_log ;;
+            4) uninstall_cloudflared ;;
+            5) ensure_shortcut ;;
+            6) update_script ;;
             0)
                 echo "再见！之后输入 a 即可随时打开菜单"
                 exit 0

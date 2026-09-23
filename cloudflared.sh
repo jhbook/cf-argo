@@ -5,9 +5,11 @@
 #
 # 基于 v3 改造，新增：
 #   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
-#   - 快捷命令 a：首次运行自动安装，之后输入 a 即可打开菜单
+#   - 快捷命令 a：首次运行自动安装，之后输入 a 即可打开菜单；
+#     进程替换/管道方式运行时自动从镜像（SCRIPT_MIRROR）下载安装
 #   - Token 持久化：保存到 /etc/cloudflared/token，重新部署时自动复用；
 #     卸载时一并清除，保证卸载干净
+#   - 卸载时连同快捷命令 a（/usr/local/bin/a）一并删除，卸载即干净
 #
 # 保留 v3 全部能力：
 #   - Alpine / OpenRC、Debian / Ubuntu / systemd
@@ -32,6 +34,11 @@ LOGROTATE_CONF="/etc/logrotate.d/cloudflared"
 GITHUB_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
 GITHUB_PROXY="https://git.jhbook.eu.org/"
 GITHUB_PROXY_BACKUP="https://ghproxy.net/"
+
+# 自身镜像地址（用于「进程替换/管道」方式运行时自动安装快捷命令 a）
+# 如果你 fork 了本脚本，请改成你自己的地址；也可运行时用环境变量覆盖：
+#   SCRIPT_MIRROR=https://你的地址 bash <(curl -sL ...)
+SCRIPT_MIRROR="${SCRIPT_MIRROR:-https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh}"
 
 
 # ============================================================
@@ -78,13 +85,40 @@ ensure_shortcut() {
 
     # 进程替换/管道执行时 $0 是伪文件（如 /root/pipe:[...]），无法复制
     if [ ! -f "$self" ]; then
-        echo ""
-        echo "[!] 当前通过「进程替换/管道」方式运行，无法自动安装快捷命令 a"
-        echo "    请先把脚本下载到本地再运行一次："
-        echo ""
-        echo "    curl -sL <脚本URL> -o /usr/local/bin/a && chmod +x /usr/local/bin/a"
-        echo ""
-        echo "    安装后直接输入 a 即可打开本菜单（无需重新部署）"
+        if [ -n "$SCRIPT_MIRROR" ]; then
+            echo ""
+            echo "[!] 当前通过「进程替换/管道」运行，改为从镜像下载快捷命令 a..."
+            TMP_A="$(mktemp /tmp/a_install.XXXXXX 2>/dev/null || echo /tmp/a_install.$$)"
+            if curl -fsSL --connect-timeout 15 --max-time 60 "$SCRIPT_MIRROR" -o "$TMP_A" \
+                && [ -s "$TMP_A" ] \
+                && grep -q "Cloudflared 管理菜单" "$TMP_A"; then
+                if cp -f "$TMP_A" /usr/local/bin/a 2>/dev/null; then
+                    chmod +x /usr/local/bin/a
+                    rm -f "$TMP_A"
+                    echo "[+] 快捷命令 a 已安装：以后直接输入 a 即可打开本菜单"
+                    return 0
+                else
+                    echo "[!] 写入 /usr/local/bin/a 失败（需要 root 权限）"
+                    echo "    请手动执行："
+                    echo "    sudo cp -f $TMP_A /usr/local/bin/a && sudo chmod +x /usr/local/bin/a"
+                    echo "    完成后可删除临时文件: rm -f $TMP_A"
+                    return 0
+                fi
+            else
+                rm -f "$TMP_A"
+                echo "[!] 从镜像下载失败或内容不完整，请手动执行："
+                echo "    curl -sL $SCRIPT_MIRROR -o /usr/local/bin/a && chmod +x /usr/local/bin/a"
+                return 0
+            fi
+        else
+            echo ""
+            echo "[!] 当前通过「进程替换/管道」方式运行，无法自动安装快捷命令 a"
+            echo "    请先把脚本下载到本地再运行一次："
+            echo ""
+            echo "    curl -sL <脚本URL> -o /usr/local/bin/a && chmod +x /usr/local/bin/a"
+            echo ""
+            echo "    安装后直接输入 a 即可打开本菜单（无需重新部署）"
+        fi
         return 0
     fi
 
@@ -472,6 +506,10 @@ uninstall_cloudflared() {
     rm -f "$TOKEN_FILE"
     rmdir "$(dirname "$TOKEN_FILE")" 2>/dev/null || true
     echo "[+] Token 文件已删除（/etc/cloudflared/token）"
+
+    # 快捷命令 a 一并清除，卸载即干净
+    rm -f /usr/local/bin/a
+    echo "[+] 快捷命令 a 已删除（/usr/local/bin/a）"
 
     echo ""
     echo "[+] cloudflared 已彻底卸载，Cloudflare 面板 Tunnel 未受影响"

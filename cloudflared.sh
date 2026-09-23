@@ -74,13 +74,26 @@ detect_arch() {
 # 确保快捷命令 a 存在
 ensure_shortcut() {
     local self
-    self="$(readlink -f "$0")"
+    self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+    # 进程替换/管道执行时 $0 是伪文件（如 /root/pipe:[...]），无法复制
+    if [ ! -f "$self" ]; then
+        echo ""
+        echo "[!] 当前通过「进程替换/管道」方式运行，无法自动安装快捷命令 a"
+        echo "    请先把脚本下载到本地再运行一次："
+        echo ""
+        echo "    curl -sL <脚本URL> -o /usr/local/bin/a && chmod +x /usr/local/bin/a"
+        echo ""
+        echo "    安装后直接输入 a 即可打开本菜单（无需重新部署）"
+        return 0
+    fi
+
     if [ "$self" != "/usr/local/bin/a" ]; then
         if cp -f "$self" /usr/local/bin/a 2>/dev/null; then
             chmod +x /usr/local/bin/a
             echo "[+] 快捷命令已安装：以后直接输入 a 即可打开本菜单"
         else
-            echo "[!] 无法写入 /usr/local/bin/a（权限不足），部署完成后请手动执行:"
+            echo "[!] 复制到 /usr/local/bin/a 失败，请手动执行："
             echo "    sudo cp -f $self /usr/local/bin/a && sudo chmod +x /usr/local/bin/a"
         fi
     fi

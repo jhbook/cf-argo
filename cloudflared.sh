@@ -1,7 +1,7 @@
-#!/bin/bash
+#!/bin/sh
 
 # ============================================================
-# Cloudflared Token Tunnel 管理菜单（v4）
+# Cloudflared Token Tunnel 管理菜单（v6）
 #
 # 基于 v3 改造，新增：
 #   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
@@ -24,6 +24,7 @@
 # 常量
 # ============================================================
 
+SCRIPT_VERSION="v6"
 CLOUDFLARED_BIN="/usr/local/bin/cloudflared"
 LOG_FILE="/var/log/cloudflared.log"
 TOKEN_FILE="/etc/cloudflared/token"
@@ -45,12 +46,10 @@ GITHUB_PROXY_BACKUP="https://ghproxy.net/"
 # 顺序策略：GitHub 代理加速（国内快+即时最新）优先，jsDelivr 其次，raw 直连兜底
 # 如果你 fork 了本脚本，请改成你自己的地址；也可运行时用环境变量覆盖：
 #   SCRIPT_MIRROR=https://你的地址 bash <(curl -sL ...)
-SCRIPT_MIRRORS=(
-    "${SCRIPT_MIRROR:-https://git.jhbook.eu.org/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh}"
-    "https://ghproxy.net/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
-    "https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh"
-    "https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
-)
+SCRIPT_MIRROR_DEFAULT="https://git.jhbook.eu.org/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
+SCRIPT_MIRROR_BACKUP1="https://ghproxy.net/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
+SCRIPT_MIRROR_BACKUP2="https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh"
+SCRIPT_MIRROR_BACKUP3="https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
 
 
 # ============================================================
@@ -74,7 +73,6 @@ detect_init() {
 }
 
 detect_arch() {
-    local a
     a="$(uname -m)"
     case "$a" in
         x86_64|amd64)      CF_FILE="cloudflared-linux-amd64" ;;
@@ -90,31 +88,39 @@ detect_arch() {
     return 0
 }
 
-# 确保快捷命令 a 存在（统一从镜像顺序下载，不区分运行方式）
+# 安装快捷命令 a：快捷命令始终通过远程脚本启动，便于获取最新版
 ensure_shortcut() {
-    for mirror in "${SCRIPT_MIRRORS[@]}"; do
-        TMP_A="$(mktemp /tmp/a_install.XXXXXX 2>/dev/null || echo /tmp/a_install.$$)"
+    need_root || return 1
+    SHORTCUT_URL=""
+    TMP_A="$(mktemp /tmp/a_install.XXXXXX 2>/dev/null)" || {
+        echo "[-] 无法创建临时文件"
+        return 1
+    }
+
+    for mirror in "${SCRIPT_MIRROR:-$SCRIPT_MIRROR_DEFAULT}" "$SCRIPT_MIRROR_BACKUP1" "$SCRIPT_MIRROR_BACKUP2" "$SCRIPT_MIRROR_BACKUP3"; do
         if curl -fsSL --connect-timeout 15 --max-time 60 "$mirror" -o "$TMP_A" \
             && [ -s "$TMP_A" ] \
             && grep -q "Cloudflared 管理菜单" "$TMP_A"; then
-            if cp -f "$TMP_A" /usr/local/bin/a 2>/dev/null; then
-                chmod +x /usr/local/bin/a
-                rm -f "$TMP_A"
-                echo "[+] 快捷命令 a 已安装：以后直接输入 a 即可打开本菜单"
-                return 0
-            else
-                echo "[!] 写入 /usr/local/bin/a 失败（需要 root 权限）"
-                echo "    手动执行: sudo cp -f $TMP_A /usr/local/bin/a && sudo chmod +x /usr/local/bin/a"
-                echo "    完成后可删除临时文件: rm -f $TMP_A"
-                return 0
-            fi
+            SHORTCUT_URL="$mirror"
+            break
         fi
-        rm -f "$TMP_A"
     done
-    echo "[!] 快捷命令 a 安装失败（所有镜像不可用或内容不完整），请手动执行："
-    echo "    curl -sL ${SCRIPT_MIRRORS[0]} -o /usr/local/bin/a && chmod +x /usr/local/bin/a"
-    return 0
+    rm -f "$TMP_A"
+
+    if [ -z "$SHORTCUT_URL" ]; then
+        echo "[-] 无法验证远程脚本，快捷命令安装失败"
+        return 1
+    fi
+
+    cat > /usr/local/bin/a <<EOF
+#!/bin/sh
+# Cloudflared 管理菜单远程快捷入口
+curl -fsSL '$SHORTCUT_URL' | sh
+EOF
+    chmod 755 /usr/local/bin/a
+    echo "[+] 快捷命令 a 安装完成：运行 a 即可获取并进入远程交互菜单"
 }
+
 
 
 # ============================================================
@@ -149,7 +155,7 @@ deploy() {
     if [ -x "$CLOUDFLARED_BIN" ] && "$CLOUDFLARED_BIN" --version >/dev/null 2>&1; then
         echo ""
         echo "[+] 已安装版本: $("$CLOUDFLARED_BIN" --version)"
-        read -rp "是否重新下载最新版? [y/N] " ANS
+        printf "%s" "是否重新下载最新版? [y/N] "; read ANS
         case "$ANS" in
             y|Y|yes|YES) NEED_DOWNLOAD=1 ;;
             *) NEED_DOWNLOAD=0 ;;
@@ -162,17 +168,12 @@ deploy() {
         echo "---------- 下载 Cloudflared ----------"
 
         GITHUB_URL="${GITHUB_BASE}/${CF_FILE}"
-        DOWNLOAD_SOURCES=(
-            "${GITHUB_PROXY}${GITHUB_URL}"
-            "${GITHUB_URL}"
-            "${GITHUB_PROXY_BACKUP}${GITHUB_URL}"
-        )
 
         TEMP_FILE="${CLOUDFLARED_BIN}.tmp"
         rm -f "$TEMP_FILE"
 
         DOWNLOAD_OK=0
-        for src in "${DOWNLOAD_SOURCES[@]}"; do
+        for src in "${GITHUB_PROXY}${GITHUB_URL}" "$GITHUB_URL" "${GITHUB_PROXY_BACKUP}${GITHUB_URL}"; do
             echo "[+] 尝试下载源: $src"
             if command -v curl >/dev/null 2>&1; then
                 curl -fL --retry 2 --retry-delay 2 --connect-timeout 15 --max-time 300 -o "$TEMP_FILE" "$src"
@@ -237,7 +238,7 @@ deploy() {
     if [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
         CF_TOKEN="$(cat "$TOKEN_FILE")"
         echo "[+] 读取已保存的 Token（${#CF_TOKEN} 位）"
-        read -rp "使用已保存 Token 继续? [Y/n] " ANS
+        printf "%s" "使用已保存 Token 继续? [Y/n] "; read ANS
         case "$ANS" in
             n|N|no) CF_TOKEN="" ;;
             *) ;;
@@ -249,7 +250,7 @@ deploy() {
         echo "两种输入方式均可："
         echo "  1. 完整命令: cloudflared service install eyJhIjoi..."
         echo "  2. 纯 Token:  eyJhIjoi..."
-        read -rp "Cloudflared Token / 命令: " RAW_CMD || {
+        printf "%s" "Cloudflared Token / 命令: "; read RAW_CMD || {
             echo "[-] 未获取到输入"
             return 1
         }
@@ -449,7 +450,7 @@ uninstall_cloudflared() {
     echo ""
     echo "========== 卸载 Cloudflared =========="
 
-    read -rp "确认卸载 cloudflared 及服务/日志配置? [y/N] " ANS
+    printf "%s" "确认卸载 cloudflared 及服务/日志配置? [y/N] "; read ANS
     case "$ANS" in
         y|Y|yes|YES) ;;
         *) echo "已取消卸载"; return 0 ;;
@@ -503,35 +504,15 @@ uninstall_cloudflared() {
 
 
 # ============================================================
-# 更新脚本（从镜像拉取最新版，替换 /usr/local/bin/a）
-# ============================================================
-
+# 更新脚本：验证远程脚本可用，并刷新快捷命令 a 的远程地址
 update_script() {
     need_root || return 1
     echo ""
-    echo "========== 更新脚本 =========="
-    for mirror in "${SCRIPT_MIRRORS[@]}"; do
-        TMP_A="$(mktemp /tmp/a_update.XXXXXX 2>/dev/null || echo /tmp/a_update.$$)"
-        if curl -fsSL --connect-timeout 15 --max-time 60 "$mirror" -o "$TMP_A" \
-            && [ -s "$TMP_A" ] \
-            && grep -q "Cloudflared 管理菜单" "$TMP_A"; then
-            if cp -f "$TMP_A" /usr/local/bin/a 2>/dev/null; then
-                chmod +x /usr/local/bin/a
-                rm -f "$TMP_A"
-                echo "[+] 脚本已更新到最新版：/usr/local/bin/a"
-                echo "    重新输入 a 即可使用新版菜单"
-                return 0
-            else
-                echo "[!] 写入 /usr/local/bin/a 失败（需要 root 权限）"
-                rm -f "$TMP_A"
-                return 1
-            fi
-        fi
-        rm -f "$TMP_A"
-    done
-    echo "[!] 所有镜像不可用或内容不完整，脚本更新失败"
-    return 1
+    echo "========== 更新脚本 / 快捷入口 =========="
+    ensure_shortcut || return 1
+    echo "[+] 更新完成。快捷命令 a 每次运行都会通过 curl -fsSL 获取远程最新版并进入交互菜单。"
 }
+
 
 
 # ============================================================
@@ -541,27 +522,27 @@ update_script() {
 # 获取运行状态：未安装 / 运行中(版本) / 已停止 / 未知
 sb_status() {
     if [ ! -x "$CLOUDFLARED_BIN" ]; then
-        echo -e "${_yellow}未安装${_plain}"
+        printf "%b\n" "${_yellow}未安装${_plain}"
         return
     fi
     detect_init
     case "$INIT_TYPE" in
         systemd)
             if systemctl is-active --quiet cloudflared 2>/dev/null; then
-                echo -e "${_green}运行中${_plain}（$("$CLOUDFLARED_BIN" --version 2>/dev/null | head -1)）"
+                printf "%b\n" "${_green}运行中${_plain}（$("$CLOUDFLARED_BIN" --version 2>/dev/null | head -n 1)）"
             else
-                echo -e "${_red}已停止${_plain}"
+                printf "%b\n" "${_red}已停止${_plain}"
             fi
             ;;
         openrc)
             if rc-service cloudflared status 2>/dev/null | grep -q started; then
-                echo -e "${_green}运行中${_plain}（$("$CLOUDFLARED_BIN" --version 2>/dev/null | head -1)）"
+                printf "%b\n" "${_green}运行中${_plain}（$("$CLOUDFLARED_BIN" --version 2>/dev/null | head -n 1)）"
             else
-                echo -e "${_red}已停止${_plain}"
+                printf "%b\n" "${_red}已停止${_plain}"
             fi
             ;;
         *)
-            echo -e "${_yellow}未知${_plain}"
+            printf "%b\n" "${_yellow}未知${_plain}"
             ;;
     esac
 }
@@ -569,9 +550,15 @@ sb_status() {
 show_menu() {
     echo ""
     echo "============================================"
-    echo "        Cloudflared 管理菜单 v4"
+    echo "        Cloudflared 管理菜单 ${SCRIPT_VERSION}"
     echo "============================================"
     echo ""
+    echo "  脚本版本：${SCRIPT_VERSION}"
+    if [ -x "$CLOUDFLARED_BIN" ]; then
+        echo "  Cloudflared 版本：$("$CLOUDFLARED_BIN" --version 2>/dev/null | head -1)"
+    else
+        echo "  Cloudflared 版本：未安装"
+    fi
     echo "  Cloudflared 状态：$(sb_status)"
     echo ""
     echo "  1) 部署 / 更新 Cloudflared"
@@ -579,12 +566,18 @@ show_menu() {
     echo "  3) 查看日志（最近 50 行）"
     echo "  4) 卸载 Cloudflared"
     echo "  5) 重新安装快捷命令 a"
-    echo "  6) 更新脚本（从镜像拉取最新版）"
+    echo "  6) 更新快捷入口（curl | sh）"
     echo "  0) 退出"
     echo ""
 }
 
 main() {
+    # 首次通过 curl | sh 运行时，自动安装快捷命令 a；安装后继续进入交互菜单。
+    # 已有快捷入口时不重复写入，避免每次启动都覆盖文件。
+    if [ "$(id -u)" = "0" ] && [ ! -x /usr/local/bin/a ]; then
+        ensure_shortcut || echo "[!] 快捷命令 a 安装失败，但仍可继续使用当前菜单"
+    fi
+
     # 支持直接指定操作（关键词 或 数字菜单编号）: a install / a 1 / a 3 ...
     case "${1:-}" in
         install|deploy|1)   deploy; exit $? ;;
@@ -598,7 +591,7 @@ main() {
 
     while true; do
         show_menu
-        read -rp "请选择 [0-6]: " CHOICE || CHOICE=""
+        printf "%s" "请选择 [0-6]: "; read CHOICE || CHOICE=""
         case "$CHOICE" in
             1) deploy ;;
             2) restart_service ;;
@@ -613,7 +606,7 @@ main() {
             *) echo "[!] 无效选项，请输入 0-6" ;;
         esac
         echo ""
-        read -rp "按回车返回菜单..." _ || true
+        printf "%s" "按回车返回菜单..."; read _ || true
     done
 }
 

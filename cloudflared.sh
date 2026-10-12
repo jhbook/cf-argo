@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # ============================================================
-# Cloudflared Token Tunnel 管理菜单（v7）
+# Cloudflared Token Tunnel 管理菜单（v8）
 #
 # 基于 v3 改造，新增：
 #   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
@@ -24,7 +24,7 @@
 # 常量
 # ============================================================
 
-SCRIPT_VERSION="v7"
+SCRIPT_VERSION="v8"
 CLOUDFLARED_BIN="/usr/local/bin/cloudflared"
 LOG_FILE="/var/log/cloudflared.log"
 TOKEN_FILE="/etc/cloudflared/token"
@@ -46,7 +46,7 @@ GITHUB_PROXY_BACKUP="https://ghproxy.net/"
 # 顺序策略：GitHub 代理加速（国内快+即时最新）优先，jsDelivr 其次，raw 直连兜底
 # 如果你 fork 了本脚本，请改成你自己的地址；也可运行时用环境变量覆盖：
 #   SCRIPT_MIRROR=https://你的地址 bash <(curl -sL ...)
-SCRIPT_MIRROR_DEFAULT="https://git.jhbook.eu.org/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
+SCRIPT_MIRROR_DEFAULT="https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
 SCRIPT_MIRROR_BACKUP1="https://ghproxy.net/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
 SCRIPT_MIRROR_BACKUP2="https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh"
 SCRIPT_MIRROR_BACKUP3="https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
@@ -88,7 +88,7 @@ detect_arch() {
     return 0
 }
 
-# 安装快捷命令 a：快捷命令始终通过远程脚本启动，便于获取最新版
+# 安装快捷命令 a：快捷命令始终通过 curl | sh 远程启动；交互输入从 /dev/tty 读取
 ensure_shortcut() {
     need_root || return 1
     SHORTCUT_URL=""
@@ -115,20 +115,8 @@ ensure_shortcut() {
     cat > /usr/local/bin/a <<EOF
 #!/bin/sh
 # Cloudflared 管理菜单远程快捷入口
-# 先下载到临时文件，再执行；不要使用 curl | sh，否则菜单 read 可能读到脚本内容而循环打印。
-set -u
 SCRIPT_URL='$SHORTCUT_URL'
-TMP_SCRIPT="$(mktemp /tmp/cloudflared-menu.XXXXXX)" || exit 1
-trap 'rm -f "$TMP_SCRIPT"' EXIT HUP INT TERM
-if ! curl -fsSL --connect-timeout 15 --max-time 120 "$SCRIPT_URL" -o "$TMP_SCRIPT"; then
-    echo "[-] 下载管理脚本失败：$SCRIPT_URL" >&2
-    exit 1
-fi
-if [ ! -s "$TMP_SCRIPT" ] || ! grep -q 'Cloudflared 管理菜单' "$TMP_SCRIPT"; then
-    echo "[-] 下载内容校验失败，拒绝执行" >&2
-    exit 1
-fi
-sh "$TMP_SCRIPT" "$@"
+curl -fsSL "$SCRIPT_URL" | sh -s -- "$@"
 EOF
     chmod 755 /usr/local/bin/a
     echo "[+] 快捷命令 a 安装完成：运行 a 即可下载并进入远程交互菜单"
@@ -168,7 +156,7 @@ deploy() {
     if [ -x "$CLOUDFLARED_BIN" ] && "$CLOUDFLARED_BIN" --version >/dev/null 2>&1; then
         echo ""
         echo "[+] 已安装版本: $("$CLOUDFLARED_BIN" --version)"
-        printf "%s" "是否重新下载最新版? [y/N] "; read ANS
+        printf "%s" "是否重新下载最新版? [y/N] "; read ANS </dev/tty
         case "$ANS" in
             y|Y|yes|YES) NEED_DOWNLOAD=1 ;;
             *) NEED_DOWNLOAD=0 ;;
@@ -251,7 +239,7 @@ deploy() {
     if [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
         CF_TOKEN="$(cat "$TOKEN_FILE")"
         echo "[+] 读取已保存的 Token（${#CF_TOKEN} 位）"
-        printf "%s" "使用已保存 Token 继续? [Y/n] "; read ANS
+        printf "%s" "使用已保存 Token 继续? [Y/n] "; read ANS </dev/tty
         case "$ANS" in
             n|N|no) CF_TOKEN="" ;;
             *) ;;
@@ -263,7 +251,7 @@ deploy() {
         echo "两种输入方式均可："
         echo "  1. 完整命令: cloudflared service install eyJhIjoi..."
         echo "  2. 纯 Token:  eyJhIjoi..."
-        printf "%s" "Cloudflared Token / 命令: "; read RAW_CMD || {
+        printf "%s" "Cloudflared Token / 命令: "; read RAW_CMD </dev/tty || {
             echo "[-] 未获取到输入"
             return 1
         }
@@ -463,7 +451,7 @@ uninstall_cloudflared() {
     echo ""
     echo "========== 卸载 Cloudflared =========="
 
-    printf "%s" "确认卸载 cloudflared 及服务/日志配置? [y/N] "; read ANS
+    printf "%s" "确认卸载 cloudflared 及服务/日志配置? [y/N] "; read ANS </dev/tty
     case "$ANS" in
         y|Y|yes|YES) ;;
         *) echo "已取消卸载"; return 0 ;;
@@ -578,15 +566,13 @@ show_menu() {
     echo "  2) 重启服务"
     echo "  3) 查看日志（最近 50 行）"
     echo "  4) 卸载 Cloudflared"
-    echo "  5) 重新安装快捷命令 a"
-    echo "  6) 更新快捷入口（远程更新快捷入口）"
+    echo "  5) 更新脚本 / 快捷入口"
     echo "  0) 退出"
     echo ""
 }
 
 main() {
-    # 首次运行时，自动安装快捷命令 a；安装后继续进入交互菜单。
-    # 已有快捷入口时不重复写入，避免每次启动都覆盖文件。
+    # 首次运行时自动安装快捷命令 a；安装后继续进入交互菜单。
     if [ "$(id -u)" = "0" ] && [ ! -x /usr/local/bin/a ]; then
         ensure_shortcut || echo "[!] 快捷命令 a 安装失败，但仍可继续使用当前菜单"
     fi
@@ -598,28 +584,26 @@ main() {
         restart|2)          restart_service; exit $? ;;
         log|3)              show_log; exit $? ;;
         uninstall|4)        uninstall_cloudflared; exit $? ;;
-        5)                  ensure_shortcut; exit $? ;;
-        update|6)           update_script; exit $? ;;
+        update|5)           update_script; exit $? ;;
     esac
 
     while true; do
         show_menu
-        printf "%s" "请选择 [0-6]: "; read CHOICE || CHOICE=""
+        printf "%s" "请选择 [0-5]: "; read CHOICE </dev/tty || CHOICE=""
         case "$CHOICE" in
             1) deploy ;;
             2) restart_service ;;
             3) show_log ;;
             4) uninstall_cloudflared ;;
-            5) ensure_shortcut ;;
-            6) update_script ;;
+            5) update_script ;;
             0)
                 echo "再见！之后输入 a 即可随时打开菜单"
                 exit 0
                 ;;
-            *) echo "[!] 无效选项，请输入 0-6" ;;
+            *) echo "[!] 无效选项，请输入 0-5" ;;
         esac
         echo ""
-        printf "%s" "按回车返回菜单..."; read _ || true
+        printf "%s" "按回车返回菜单..."; read _ </dev/tty || true
     done
 }
 

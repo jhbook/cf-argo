@@ -1,18 +1,18 @@
-# Cloudflared Token Tunnel 一键管理脚本（v7）
+# Cloudflared Token Tunnel 一键管理脚本（v8）
 
 一个面向 Cloudflare Tunnel（Token 模式）的**一键部署 + 菜单化管理**脚本。支持国内服务器多源加速下载，卸载即干净（连 Token 与快捷命令一起删除）。
 
 ## 功能特性
 
 - **一键部署**：自动识别系统与 CPU 架构，多源降级下载 cloudflared 二进制，创建服务并启动
-- **交互式菜单**：部署 / 重启 / 日志 / 卸载 / 重装快捷命令 / 更新脚本 一体化管理
+- **交互式菜单**：部署 / 重启 / 日志 / 卸载 / 更新脚本 一体化管理
 - **菜单实时状态**：打开菜单即显示 `运行中（版本）/ 已停止 / 未安装`
 - **POSIX `sh` 兼容**：使用 `#!/bin/sh`，面向 Alpine BusyBox `ash`，同时支持 Debian / Ubuntu 的 `/bin/sh`
-- **快捷命令 `a`**：首次通过远程命令启动时自动安装 `/usr/local/bin/a`，之后输入 `a` 即可通过临时文件下载、校验后启动远程菜单
+- **快捷命令 `a`**：首次通过远程命令启动时自动安装 `/usr/local/bin/a`，之后输入 `a` 即可通过 `curl -fsSL "$SCRIPT_URL" | sh` 启动远程菜单；交互输入从 `/dev/tty` 读取，避免管道占用菜单输入
 - **Token 持久化**：保存到 `/etc/cloudflared/token`（600 权限），重装自动复用；卸载时一并清除
 - **卸载即干净**：停止并移除服务、删除二进制 / 日志 / logrotate 配置 / Token / 快捷命令 `a`，一次清空
 - **版本显示**：菜单显示管理脚本版本与已安装的 Cloudflared 版本
-- **更新脚本**：验证远程脚本可用并刷新快捷入口，菜单选 `6` 或执行 `a update`
+- **更新脚本**：验证远程脚本可用并刷新快捷入口，菜单选 `5` 或执行 `a update`
 
 ## 系统要求
 
@@ -29,13 +29,13 @@
 推荐的一键安装方式（POSIX `sh`，适用于 Alpine / Debian / Ubuntu）：
 
 ```sh
-curl -fsSL 'https://git.jhbook.eu.org/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' -o /tmp/cloudflared.sh && sh /tmp/cloudflared.sh
+curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
 ```
 
 如果代理地址不可用，可尝试 GitHub Raw 直连：
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' -o /tmp/cloudflared.sh && sh /tmp/cloudflared.sh
+curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
 ```
 
 也可以下载到本地运行：
@@ -51,10 +51,10 @@ sh ./cloudflared.sh
 
 ```
 ============================================
-        Cloudflared 管理菜单 v7
+        Cloudflared 管理菜单 v8
 ============================================
 
-  脚本版本：v7
+  脚本版本：v8
   Cloudflared 版本：已安装版本 / 未安装
   Cloudflared 状态：运行中（版本）/ 已停止 / 未安装
 
@@ -62,8 +62,7 @@ sh ./cloudflared.sh
   2) 重启服务
   3) 查看日志（最近 50 行）
   4) 卸载 Cloudflared          彻底卸载（见下文）
-  5) 重新安装快捷命令 a        从镜像重新拉取安装
-  6) 更新快捷入口              验证远程脚本并刷新 /usr/local/bin/a
+  5) 更新脚本 / 快捷入口       验证远程脚本并刷新 /usr/local/bin/a
   0) 退出
 ```
 
@@ -76,8 +75,7 @@ a 1 / a install   部署 / 更新
 a 2 / a restart   重启服务
 a 3 / a log       查看日志（50 行）
 a 4 / a uninstall 卸载
-a 5               重装快捷命令 a
-a 6 / a update    更新脚本
+a 5 / a update    更新脚本
 a status          查看详细状态（服务状态 + 最近日志）
 ```
 
@@ -157,7 +155,7 @@ jsDelivr 的 `gh/` 只代理 GitHub 仓库内容，**不代理 Release 资产**�
 脚本会依次尝试 3 个二进制源。全部失败通常是外网连通 / DNS 问题，检查后再选菜单 1 重试。
 
 **Q：快捷命令 `a` 是怎么来的？**
-首次运行脚本时会验证一个可用的远程脚本地址，并将远程启动入口写入 `/usr/local/bin/a`。之后输入 `a` 会先将远程脚本下载到临时文件并校验，再执行脚本文件。这样菜单的 `read` 会从终端读取用户输入，不会误读管道中的脚本内容。菜单选 5 可重新安装快捷入口，选 6 可刷新入口地址。
+首次以 root 运行时自动写入 `/usr/local/bin/a`。入口使用 `curl -fsSL "$SCRIPT_URL" | sh` 启动远程脚本。为避免管道占用标准输入，所有交互式输入都从 `/dev/tty` 读取，因此可以直接使用 `curl -fsSL '脚本地址' | sh`。菜单选 5 可更新脚本/快捷入口。
 
 **Q：如何 fork 后自用？**
 修改脚本中的 `SCRIPT_MIRROR_DEFAULT` 及备用地址为你自己的仓库地址。脚本使用 POSIX `sh`，推荐这样启动：

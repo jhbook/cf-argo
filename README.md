@@ -9,8 +9,9 @@
 - **菜单实时状态**：打开菜单即显示 `运行中（版本）/ 已停止 / 未安装`
 - **POSIX `sh` 兼容**：使用 `#!/bin/sh`，面向 Alpine BusyBox `ash`，同时支持 Debian / Ubuntu 的 `/bin/sh`
 - **快捷命令 `a`**：首次通过远程命令启动时自动安装 `/usr/local/bin/a`，之后输入 `a` 即可通过 `curl -fsSL "$SCRIPT_URL" | sh` 启动远程菜单；交互输入从 `/dev/tty` 读取，避免管道占用菜单输入
-- **Token 持久化**：保存到 `/etc/cloudflared/token`（600 权限），重装自动复用；卸载时一并清除
-- **卸载即干净**：停止并移除服务、删除二进制 / 日志 / logrotate 配置 / Token / 快捷命令 `a` / 本地管理脚本（如存在），一次清空
+- **Token 提取优化**：支持粘贴面板的 `service install` 命令、带 `--token` 的运行命令或纯 Token，自动提取 Token 并校验输入
+- **IP 版本可选**：部署时可选 IPv4、IPv6 或 IPv4/IPv6 自动模式，配置会保存并在下次部署时作为默认值；卸载时一并清除
+- **卸载即干净**：停止并移除服务、删除二进制 / 日志 / logrotate 配置 / Token / IP 版本配置 / 快捷命令 `a` / 本地管理脚本（如存在），一次清空
 - **版本显示**：菜单显示管理脚本版本与已安装的 Cloudflared 版本
 - **更新脚本**：验证远程脚本可用并刷新快捷入口，菜单选 `5` 或执行 `a update`
 
@@ -81,17 +82,30 @@ a status          查看详细状态（服务状态 + 最近日志）
 
 ## Token 输入方式
 
-两种输入方式均可，脚本自动识别：
+支持以下输入方式，脚本会自动提取 Token：
 
 ```bash
-# 方式 1：完整命令（Cloudflare 面板「复制命令」按钮得到的内容）
+# 方式 1：Cloudflare 面板的安装命令
 cloudflared service install eyJhIjoi...
 
-# 方式 2：纯 Token（仅 eyJhIjoi... 开头的一串）
+# 方式 2：带 --token 的运行命令
+cloudflared tunnel run --token eyJhIjoi...
+
+# 方式 3：纯 Token
 eyJhIjoi...
 ```
 
 Token 会持久化到 `/etc/cloudflared/token`（600 权限），下次部署自动读取并询问是否复用；输入 `n` 可重新填写。
+
+## 连接 IP 版本选择
+
+每次部署或更新服务时，可选择 Cloudflared 连接 Cloudflare Edge 的 IP 版本：
+
+1. **IPv4**：仅通过 IPv4 连接（`--edge-ip-version 4`）
+2. **IPv6**：仅通过 IPv6 连接（`--edge-ip-version 6`）
+3. **IPv4/IPv6 自动**：根据系统 DNS 解析顺序选择优先地址族，并在双栈环境下具备连接回退能力（`--edge-ip-version auto`）
+
+选择会保存到 `/etc/cloudflared/edge_ip_version`，下次部署时按上次选择作为默认值；直接回车沿用默认值。请注意，“自动”不是同时强制使用两种协议，而是由 Cloudflared 根据系统解析结果选择优先地址族并处理回退。
 
 ## 下载源策略
 
@@ -127,6 +141,7 @@ a 4   或   a uninstall   或   菜单选 4
 | 日志 | `/var/log/cloudflared.log` |
 | logrotate | `/etc/logrotate.d/cloudflared` |
 | Token | `/etc/cloudflared/token`（目录一并删除） |
+| IP 版本选择 | `/etc/cloudflared/edge_ip_version`（卸载删除） |
 | 快捷命令 | `/usr/local/bin/a` |
 | 本地管理脚本（如存在） | `/usr/local/bin/cloudflared.sh` |
 
@@ -139,6 +154,7 @@ Cloudflare 面板侧的 Tunnel 记录不受影响，可随时重新部署。
 | `/usr/local/bin/cloudflared` | cloudflared 二进制 |
 | `/usr/local/bin/a` | 菜单快捷命令 |
 | `/etc/cloudflared/token` | Token（600 权限，卸载删除） |
+| `/etc/cloudflared/edge_ip_version` | IP 版本选择（600 权限，卸载删除） |
 | `/var/log/cloudflared.log` | 运行日志（logrotate 每日轮转，保留 7 份压缩） |
 | `/etc/logrotate.d/cloudflared` | logrotate 配置 |
 | `/etc/systemd/system/cloudflared.service` | systemd 服务 |

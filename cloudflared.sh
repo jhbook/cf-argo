@@ -28,6 +28,7 @@ SCRIPT_VERSION="8.1"
 CLOUDFLARED_BIN="/usr/local/bin/cloudflared"
 LOG_FILE="/var/log/cloudflared.log"
 TOKEN_FILE="/etc/cloudflared/token"
+EDGE_IP_VERSION_FILE="/etc/cloudflared/edge_ip_version"
 OPENRC_SERVICE="/etc/init.d/cloudflared"
 SYSTEMD_SERVICE="/etc/systemd/system/cloudflared.service"
 LOGROTATE_CONF="/etc/logrotate.d/cloudflared"
@@ -243,14 +244,18 @@ deploy() {
             return 1
         }
 
-        if echo "$RAW_CMD" | grep -q 'service[[:space:]]\+install'; then
-            CF_TOKEN="$(echo "$RAW_CMD" | sed -E 's/.*service[[:space:]]+install[[:space:]]+//' | tr -d '[:space:]')"
+        # 兼容面板复制命令、tunnel run --token 命令，以及纯 Token。
+        # 优先提取 --token 参数，再处理 service install，避免把整条命令误存为 Token。
+        if echo "$RAW_CMD" | grep -Eq -- '(^|[[:space:]])--token([=[:space:]])'; then
+            CF_TOKEN="$(printf '%s\n' "$RAW_CMD" | sed -E 's/.*--token[=[:space:]]+([^[:space:]]+).*/\1/' | tr -d '"'"'"'')"
+        elif echo "$RAW_CMD" | grep -Eq 'service[[:space:]]+install'; then
+            CF_TOKEN="$(printf '%s\n' "$RAW_CMD" | sed -E 's/.*service[[:space:]]+install[[:space:]]+//' | awk '{print $1}' | tr -d '"'"'"'')"
         else
-            CF_TOKEN="$(echo "$RAW_CMD" | tr -d '[:space:]')"
+            CF_TOKEN="$(printf '%s' "$RAW_CMD" | tr -d '[:space:]' | tr -d '"'"'"'')"
         fi
 
-        if [ -z "$CF_TOKEN" ]; then
-            echo "[-] 未能解析出 Tunnel Token"
+        if [ -z "$CF_TOKEN" ] || echo "$CF_TOKEN" | grep -Eq '[[:space:]]|cloudflared'; then
+            echo "[-] 未能解析出有效的 Tunnel Token，请粘贴完整安装命令或纯 Token"
             return 1
         fi
 
@@ -262,6 +267,41 @@ deploy() {
         echo "[+] Token 已保存到 $TOKEN_FILE（重装无需再输入）"
     fi
     echo "[+] Token 解析成功（${#CF_TOKEN} 位）"
+
+    # ---- 选择 Cloudflare Edge 连接 IP 版本 ----
+    EDGE_IP_VERSION="4"
+    if [ -s "$EDGE_IP_VERSION_FILE" ]; then
+        SAVED_EDGE_IP_VERSION="$(cat "$EDGE_IP_VERSION_FILE" 2>/dev/null)"
+        case "$SAVED_EDGE_IP_VERSION" in 4|6|auto) EDGE_IP_VERSION="$SAVED_EDGE_IP_VERSION" ;; esac
+    fi
+    case "$EDGE_IP_VERSION" in
+        4) EDGE_DEFAULT_LABEL="IPv4" ;;
+        6) EDGE_DEFAULT_LABEL="IPv6" ;;
+        auto) EDGE_DEFAULT_LABEL="IPv4/IPv6 自动选择" ;;
+    esac
+    echo ""
+    echo "选择 Cloudflared 连接 Cloudflare Edge 的 IP 版本："
+    echo "  1) IPv4（仅 IPv4）"
+    echo "  2) IPv6（仅 IPv6）"
+    echo "  3) IPv4/IPv6（自动选择并在双栈环境中回退）"
+    printf "当前默认：%s；请输入 [1-3，直接回车沿用默认]: " "$EDGE_DEFAULT_LABEL"
+    read EDGE_CHOICE </dev/tty || EDGE_CHOICE=""
+    case "$EDGE_CHOICE" in
+        1) EDGE_IP_VERSION="4" ;;
+        2) EDGE_IP_VERSION="6" ;;
+        3) EDGE_IP_VERSION="auto" ;;
+        "") ;;
+        *) echo "[-] 无效选择，保留默认：$EDGE_DEFAULT_LABEL" ;;
+    esac
+    mkdir -p "$(dirname "$EDGE_IP_VERSION_FILE")"
+    chmod 700 "$(dirname "$EDGE_IP_VERSION_FILE")"
+    printf '%s\n' "$EDGE_IP_VERSION" > "$EDGE_IP_VERSION_FILE"
+    chmod 600 "$EDGE_IP_VERSION_FILE"
+    case "$EDGE_IP_VERSION" in
+        4) echo "[+] 已选择 IPv4 连接模式" ;;
+        6) echo "[+] 已选择 IPv6 连接模式" ;;
+        auto) echo "[+] 已选择 IPv4/IPv6 自动模式" ;;
+    esac
 
     # ---- 日志文件 ----
     touch "$LOG_FILE"
@@ -276,7 +316,7 @@ name="cloudflared"
 description="Cloudflare Tunnel (Token mode)"
 
 command="$CLOUDFLARED_BIN"
-command_args="tunnel --edge-ip-version 4 run --token $CF_TOKEN"
+command_args="tunnel --edge-ip-version $EDGE_IP_VERSION run --token $CF_TOKEN"
 
 supervisor="supervise-daemon"
 
@@ -303,7 +343,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 
-ExecStart=$CLOUDFLARED_BIN tunnel --edge-ip-version 4 run --token $CF_TOKEN
+ExecStart=$CLOUDFLARED_BIN tunnel --edge-ip-version $EDGE_IP_VERSION run --token $CF_TOKEN
 
 Restart=always
 RestartSec=5
@@ -478,9 +518,9 @@ uninstall_cloudflared() {
     rm -f "$LOGROTATE_CONF"
 
     # Token 一并清除，卸载即干净
-    rm -f "$TOKEN_FILE"
+    rm -f "$TOKEN_FILE" "$EDGE_IP_VERSION_FILE"
     rmdir "$(dirname "$TOKEN_FILE")" 2>/dev/null || true
-    echo "[+] Token 文件已删除（/etc/cloudflared/token）"
+    echo "[+] Token 与 IP 版本配置已删除（/etc/cloudflared/）"
 
     # 快捷命令 a 一并清除，卸载即干净
     rm -f /usr/local/bin/a /usr/local/bin/cloudflared.sh

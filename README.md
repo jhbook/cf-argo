@@ -1,4 +1,4 @@
-# Cloudflared Token Tunnel 一键管理脚本（v8.1）
+# Cloudflared Token Tunnel 一键管理脚本（v8.2）
 
 一个面向 Cloudflare Tunnel（Token 模式）的**一键部署 + 菜单化管理**脚本。支持国内服务器多源加速下载，卸载即干净（连 Token 与快捷命令一起删除）。
 
@@ -55,7 +55,7 @@ sh ./cloudflared.sh
         Cloudflared 管理菜单 8.1
 ============================================
 
-  脚本版本：8.1
+  脚本版本：8.2
   Cloudflared 版本：已安装版本 / 未安装
   Cloudflared 状态：运行中（版本）/ 已停止 / 未安装
 
@@ -117,14 +117,12 @@ Token 会持久化到 `/etc/cloudflared/token`（600 权限），下次部署自
 
 下载后三重校验：`file` 类型检查（拦截 HTML 错误页）→ 打印实际 SHA256（可对照官方 Release 页核对）→ `--version` 可执行验证。
 
-### 脚本自身镜像（安装 `a` / 更新快捷入口用，四源自动降级）
+### 脚本自身镜像（安装 `a` / 更新快捷入口用，双源自动降级）
 
-1. `git.jhbook.eu.org` 代理 GitHub raw（优先，国内快 + 即时最新）
-2. `ghproxy.net` 代理 GitHub raw（备用）
-3. jsDelivr CDN
-4. GitHub raw 直连（兜底）
+1. GitHub raw：`raw.githubusercontent.com`（默认优先，保持即时更新）
+2. jsDelivr CDN：`cdn.jsdelivr.net`（raw 不可用时回退）
 
-> 注意：jsDelivr 可能存在 CDN 缓存延迟。脚本会检查下载内容是否包含「Cloudflared 管理菜单」标识；快捷命令 `a` 本身是一个远程启动入口，每次执行都会先下载到临时文件并校验，再用 `sh` 执行，避免管道占用交互输入导致菜单循环打印。
+> 注意：jsDelivr 可能存在 CDN 缓存延迟。脚本会检查下载内容是否包含「Cloudflared 管理菜单」标识；快捷命令 `a` 本身是一个远程启动入口，每次执行都会先尝试 GitHub raw，失败时回退到 jsDelivr CDN，验证脚本标识后再通过 `curl | sh` 执行，避免管道占用交互输入导致菜单循环打印。
 
 ## 卸载说明
 
@@ -175,7 +173,7 @@ jsDelivr 的 `gh/` 只代理 GitHub 仓库内容，**不代理 Release 资产**�
 首次以 root 运行时自动写入 `/usr/local/bin/a`。入口使用 `curl -fsSL "$SCRIPT_URL" | sh` 启动远程脚本。为避免管道占用标准输入，所有交互式输入都从 `/dev/tty` 读取，因此可以直接使用 `curl -fsSL '脚本地址' | sh`。菜单选 5 可更新脚本/快捷入口。
 
 **Q：如何 fork 后自用？**
-修改脚本中的 `SCRIPT_MIRROR_DEFAULT` 及备用地址为你自己的仓库地址。脚本使用 POSIX `sh`，推荐这样启动：
+修改脚本中的 `SCRIPT_MIRROR_DEFAULT`（GitHub raw）和 `SCRIPT_MIRROR_BACKUP1`（jsDelivr CDN）为你自己的仓库地址。脚本使用 POSIX `sh`，推荐这样启动：
 
 ```sh
 curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh

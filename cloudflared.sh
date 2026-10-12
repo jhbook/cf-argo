@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # ============================================================
-# Cloudflared Token Tunnel 管理菜单（v8.1）
+# Cloudflared Token Tunnel 管理菜单（v8.2）
 #
 # 基于 v3 改造，新增：
 #   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
@@ -24,7 +24,7 @@
 # 常量
 # ============================================================
 
-SCRIPT_VERSION="8.1"
+SCRIPT_VERSION="8.2"
 CLOUDFLARED_BIN="/usr/local/bin/cloudflared"
 LOG_FILE="/var/log/cloudflared.log"
 TOKEN_FILE="/etc/cloudflared/token"
@@ -43,14 +43,10 @@ GITHUB_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
 GITHUB_PROXY="https://git.jhbook.eu.org/"
 GITHUB_PROXY_BACKUP="https://ghproxy.net/"
 
-# 自身镜像地址列表（进程替换/管道运行且无法复制自身时，按序尝试下载）
-# 顺序策略：GitHub 代理加速（国内快+即时最新）优先，jsDelivr 其次，raw 直连兜底
-# 如果你 fork 了本脚本，请改成你自己的地址；也可运行时用环境变量覆盖：
-#   SCRIPT_MIRROR=https://你的地址 bash <(curl -sL ...)
+# 自身脚本镜像地址列表：默认 GitHub raw，失败时回退到 jsDelivr CDN
+# 如果你 fork 了本脚本，请同步修改下面两个地址。
 SCRIPT_MIRROR_DEFAULT="https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
-SCRIPT_MIRROR_BACKUP1="https://ghproxy.net/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
-SCRIPT_MIRROR_BACKUP2="https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh"
-SCRIPT_MIRROR_BACKUP3="https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
+SCRIPT_MIRROR_BACKUP1="https://cdn.jsdelivr.net/gh/jhbook/cf-argo@main/cloudflared.sh"
 
 
 # ============================================================
@@ -93,18 +89,38 @@ detect_arch() {
 ensure_shortcut() {
     need_root || return 1
 
-    # 固定使用仓库中的 raw URL，避免把空值/占位符写进快捷入口。
-    SCRIPT_URL="https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
-    if ! curl -fsSL --connect-timeout 15 --max-time 60 "$SCRIPT_URL" | grep -q "Cloudflared 管理菜单"; then
-        echo "[-] 无法验证远程脚本：$SCRIPT_URL"
-        echo "    请确认仓库地址正确且远程文件可访问"
+    # 按默认 raw → jsDelivr 的顺序验证自身脚本镜像。
+    SCRIPT_URL=""
+    for MIRROR_URL in "$SCRIPT_MIRROR_DEFAULT" "$SCRIPT_MIRROR_BACKUP1"; do
+        echo "[+] 验证脚本镜像：$MIRROR_URL"
+        if curl -fsSL --connect-timeout 15 --max-time 60 "$MIRROR_URL" | grep -q "Cloudflared Token Tunnel 管理菜单"; then
+            SCRIPT_URL="$MIRROR_URL"
+            break
+        fi
+        echo "[!] 镜像不可用，尝试下一个地址..."
+    done
+
+    if [ -z "$SCRIPT_URL" ]; then
+        echo "[-] 所有自身脚本镜像均无法验证"
         return 1
     fi
 
-    cat > /usr/local/bin/a <<'EOF'
+    cat > /usr/local/bin/a <<EOF
 #!/bin/sh
-SCRIPT_URL='https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh'
-exec curl -fsSL "$SCRIPT_URL" | sh -s -- "$@"
+SCRIPT_MIRROR_DEFAULT='$SCRIPT_MIRROR_DEFAULT'
+SCRIPT_MIRROR_BACKUP1='$SCRIPT_MIRROR_BACKUP1'
+SCRIPT_URL=""
+for MIRROR_URL in "\$SCRIPT_MIRROR_DEFAULT" "\$SCRIPT_MIRROR_BACKUP1"; do
+    if curl -fsSL --connect-timeout 15 --max-time 60 "\$MIRROR_URL" | grep -q "Cloudflared Token Tunnel 管理菜单"; then
+        SCRIPT_URL="\$MIRROR_URL"
+        break
+    fi
+done
+if [ -z "\$SCRIPT_URL" ]; then
+    echo "[-] 所有脚本镜像均不可用"
+    exit 1
+fi
+exec curl -fsSL "\$SCRIPT_URL" | sh -s -- "\$@"
 EOF
     chmod 755 /usr/local/bin/a
     echo "[+] 快捷命令 a 已安装：运行 a 即可打开远程管理菜单"

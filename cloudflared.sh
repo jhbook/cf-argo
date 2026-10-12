@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # ============================================================
-# Cloudflared Token Tunnel 管理菜单（v8.2）
+# Cloudflared Token Tunnel 管理菜单（v8.3）
 #
 # 基于 v3 改造，新增：
 #   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
@@ -24,7 +24,7 @@
 # 常量
 # ============================================================
 
-SCRIPT_VERSION="8.2"
+SCRIPT_VERSION="8.3"
 CLOUDFLARED_BIN="/usr/local/bin/cloudflared"
 LOG_FILE="/var/log/cloudflared.log"
 TOKEN_FILE="/etc/cloudflared/token"
@@ -85,15 +85,29 @@ detect_arch() {
     return 0
 }
 
+# 仅对 GitHub Raw 请求添加时间戳，尽量绕过中间缓存；jsDelivr 保持备用源原地址。
+cache_bust_script_url() {
+    case "$1" in
+        *raw.githubusercontent.com*)
+            case "$1" in
+                *\?*) printf '%s&t=%s\n' "$1" "$(date +%s)" ;;
+                *)    printf '%s?t=%s\n' "$1" "$(date +%s)" ;;
+            esac
+            ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
 # 安装快捷命令 a：快捷命令始终通过 curl | sh 远程启动；交互输入从 /dev/tty 读取
 ensure_shortcut() {
     need_root || return 1
 
-    # 按默认 raw → jsDelivr 的顺序验证自身脚本镜像。
+    # 按默认 raw → jsDelivr 的顺序验证自身脚本镜像；Raw 请求添加时间戳避免旧缓存。
     SCRIPT_URL=""
     for MIRROR_URL in "$SCRIPT_MIRROR_DEFAULT" "$SCRIPT_MIRROR_BACKUP1"; do
-        echo "[+] 验证脚本镜像：$MIRROR_URL"
-        if curl -fsSL --connect-timeout 15 --max-time 60 "$MIRROR_URL" | grep -q "Cloudflared Token Tunnel 管理菜单"; then
+        REQUEST_URL=$(cache_bust_script_url "$MIRROR_URL")
+        echo "[+] 验证脚本镜像：$REQUEST_URL"
+        if curl -fsSL --connect-timeout 15 --max-time 60 "$REQUEST_URL" | grep -q "Cloudflared Token Tunnel 管理菜单"; then
             SCRIPT_URL="$MIRROR_URL"
             break
         fi
@@ -109,9 +123,21 @@ ensure_shortcut() {
 #!/bin/sh
 SCRIPT_MIRROR_DEFAULT='$SCRIPT_MIRROR_DEFAULT'
 SCRIPT_MIRROR_BACKUP1='$SCRIPT_MIRROR_BACKUP1'
+cache_bust_script_url() {
+    case "\$1" in
+        *raw.githubusercontent.com*)
+            case "\$1" in
+                *\?*) printf '%s&t=%s\n' "\$1" "\$(date +%s)" ;;
+                *) printf '%s?t=%s\n' "\$1" "\$(date +%s)" ;;
+            esac
+            ;;
+        *) printf '%s\n' "\$1" ;;
+    esac
+}
 SCRIPT_URL=""
 for MIRROR_URL in "\$SCRIPT_MIRROR_DEFAULT" "\$SCRIPT_MIRROR_BACKUP1"; do
-    if curl -fsSL --connect-timeout 15 --max-time 60 "\$MIRROR_URL" | grep -q "Cloudflared Token Tunnel 管理菜单"; then
+    REQUEST_URL=\$(cache_bust_script_url "\$MIRROR_URL")
+    if curl -fsSL --connect-timeout 15 --max-time 60 "\$REQUEST_URL" | grep -q "Cloudflared Token Tunnel 管理菜单"; then
         SCRIPT_URL="\$MIRROR_URL"
         break
     fi
@@ -120,7 +146,8 @@ if [ -z "\$SCRIPT_URL" ]; then
     echo "[-] 所有脚本镜像均不可用"
     exit 1
 fi
-exec curl -fsSL "\$SCRIPT_URL" | sh -s -- "\$@"
+REQUEST_URL=\$(cache_bust_script_url "\$SCRIPT_URL")
+exec curl -fsSL "\$REQUEST_URL" | sh -s -- "\$@"
 EOF
     chmod 755 /usr/local/bin/a
     echo "[+] 快捷命令 a 已安装：运行 a 即可打开远程管理菜单"

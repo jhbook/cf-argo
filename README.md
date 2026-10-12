@@ -1,4 +1,4 @@
-# Cloudflared Token Tunnel 一键管理脚本（v8.2）
+# Cloudflared Token Tunnel 一键管理脚本（v8.3）
 
 一个面向 Cloudflare Tunnel（Token 模式）的**一键部署 + 菜单化管理**脚本。支持国内服务器多源加速下载，卸载即干净（连 Token 与快捷命令一起删除）。
 
@@ -30,19 +30,19 @@
 推荐的一键安装方式（POSIX `sh`，适用于 Alpine / Debian / Ubuntu）：
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
+curl -fsSL "https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh?t=$(date +%s)" | sh
 ```
 
 如果代理地址不可用，可尝试 GitHub Raw 直连：
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
+curl -fsSL "https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh?t=$(date +%s)" | sh
 ```
 
 也可以下载到本地运行：
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
+curl -fsSL "https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh?t=$(date +%s)" | sh
 chmod +x cloudflared.sh
 sh ./cloudflared.sh
 ```
@@ -55,7 +55,7 @@ sh ./cloudflared.sh
         Cloudflared 管理菜单 8.1
 ============================================
 
-  脚本版本：8.2
+  脚本版本：8.3
   Cloudflared 版本：已安装版本 / 未安装
   Cloudflared 状态：运行中（版本）/ 已停止 / 未安装
 
@@ -119,10 +119,10 @@ Token 会持久化到 `/etc/cloudflared/token`（600 权限），下次部署自
 
 ### 脚本自身镜像（安装 `a` / 更新快捷入口用，双源自动降级）
 
-1. GitHub raw：`raw.githubusercontent.com`（默认优先，保持即时更新）
+1. GitHub raw：`raw.githubusercontent.com`（默认优先，每次请求追加 `?t=时间戳`，尽量绕过缓存）
 2. jsDelivr CDN：`cdn.jsdelivr.net`（raw 不可用时回退）
 
-> 注意：jsDelivr 可能存在 CDN 缓存延迟。脚本会检查下载内容是否包含「Cloudflared 管理菜单」标识；快捷命令 `a` 本身是一个远程启动入口，每次执行都会先尝试 GitHub raw，失败时回退到 jsDelivr CDN，验证脚本标识后再通过 `curl | sh` 执行，避免管道占用交互输入导致菜单循环打印。
+> 注意：快捷命令 `a` 在验证和执行 GitHub Raw 地址时都会追加 `?t=时间戳`，尽量绕过中间缓存；Raw 不可用时回退到 jsDelivr CDN。脚本会验证远程内容是否包含管理菜单标识，再通过 `curl | sh` 执行。时间戳参数不能保证清除 CDN 全局缓存，但能避免重复使用同一个无参数 URL。
 
 ## 卸载说明
 
@@ -170,13 +170,13 @@ jsDelivr 的 `gh/` 只代理 GitHub 仓库内容，**不代理 Release 资产**�
 脚本会依次尝试 3 个二进制源。全部失败通常是外网连通 / DNS 问题，检查后再选菜单 1 重试。
 
 **Q：快捷命令 `a` 是怎么来的？**
-首次以 root 运行时自动写入 `/usr/local/bin/a`。入口使用 `curl -fsSL "$SCRIPT_URL" | sh` 启动远程脚本。为避免管道占用标准输入，所有交互式输入都从 `/dev/tty` 读取，因此可以直接使用 `curl -fsSL '脚本地址' | sh`。菜单选 5 可更新脚本/快捷入口。
+首次以 root 运行时自动写入 `/usr/local/bin/a`。入口使用 `curl -fsSL "$SCRIPT_URL?t=$(date +%s)" | sh`（GitHub Raw）启动远程脚本，并在 Raw 不可用时回退到 jsDelivr。为避免管道占用标准输入，所有交互式输入都从 `/dev/tty` 读取，因此可以直接使用 `curl -fsSL '脚本地址' | sh`。菜单选 5 可更新脚本/快捷入口。
 
 **Q：如何 fork 后自用？**
 修改脚本中的 `SCRIPT_MIRROR_DEFAULT`（GitHub raw）和 `SCRIPT_MIRROR_BACKUP1`（jsDelivr CDN）为你自己的仓库地址。脚本使用 POSIX `sh`，推荐这样启动：
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
+curl -fsSL "https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh?t=$(date +%s)" | sh
 ```
 
 ## 许可证
@@ -189,7 +189,7 @@ curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/clo
 快捷命令固定从以下地址获取脚本：
 
 ```sh
-curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
+curl -fsSL "https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh?t=$(date +%s)" | sh
 ```
 
 如果运行 `a` 出现 `curl: (3) URL using bad/illegal format or missing URL`，通常是旧版快捷入口保存了空地址或错误地址。请先用上面的命令运行最新版，在菜单中选择 **5）更新脚本 / 快捷入口**，重新生成 `/usr/local/bin/a`。

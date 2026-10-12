@@ -1,4 +1,4 @@
-# Cloudflared Token Tunnel 一键管理脚本（v8）
+# Cloudflared Token Tunnel 一键管理脚本（v8.1）
 
 一个面向 Cloudflare Tunnel（Token 模式）的**一键部署 + 菜单化管理**脚本。支持国内服务器多源加速下载，卸载即干净（连 Token 与快捷命令一起删除）。
 
@@ -10,7 +10,7 @@
 - **POSIX `sh` 兼容**：使用 `#!/bin/sh`，面向 Alpine BusyBox `ash`，同时支持 Debian / Ubuntu 的 `/bin/sh`
 - **快捷命令 `a`**：首次通过远程命令启动时自动安装 `/usr/local/bin/a`，之后输入 `a` 即可通过 `curl -fsSL "$SCRIPT_URL" | sh` 启动远程菜单；交互输入从 `/dev/tty` 读取，避免管道占用菜单输入
 - **Token 持久化**：保存到 `/etc/cloudflared/token`（600 权限），重装自动复用；卸载时一并清除
-- **卸载即干净**：停止并移除服务、删除二进制 / 日志 / logrotate 配置 / Token / 快捷命令 `a`，一次清空
+- **卸载即干净**：停止并移除服务、删除二进制 / 日志 / logrotate 配置 / Token / 快捷命令 `a` / 本地管理脚本（如存在），一次清空
 - **版本显示**：菜单显示管理脚本版本与已安装的 Cloudflared 版本
 - **更新脚本**：验证远程脚本可用并刷新快捷入口，菜单选 `5` 或执行 `a update`
 
@@ -41,7 +41,7 @@ curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/clo
 也可以下载到本地运行：
 
 ```sh
-curl -fsSL -o cloudflared.sh 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh'
+curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
 chmod +x cloudflared.sh
 sh ./cloudflared.sh
 ```
@@ -51,14 +51,14 @@ sh ./cloudflared.sh
 
 ```
 ============================================
-        Cloudflared 管理菜单 v8
+        Cloudflared 管理菜单 8.1
 ============================================
 
-  脚本版本：v8
+  脚本版本：8.1
   Cloudflared 版本：已安装版本 / 未安装
   Cloudflared 状态：运行中（版本）/ 已停止 / 未安装
 
-  1) 部署 / 更新 Cloudflared   安装/升级二进制、配置 Token、创建服务、装快捷命令
+  1) 安装 / 更新 Cloudflared 二进制（并配置/启动 Tunnel）
   2) 重启服务
   3) 查看日志（最近 50 行）
   4) 卸载 Cloudflared          彻底卸载（见下文）
@@ -128,6 +128,7 @@ a 4   或   a uninstall   或   菜单选 4
 | logrotate | `/etc/logrotate.d/cloudflared` |
 | Token | `/etc/cloudflared/token`（目录一并删除） |
 | 快捷命令 | `/usr/local/bin/a` |
+| 本地管理脚本（如存在） | `/usr/local/bin/cloudflared.sh` |
 
 Cloudflare 面板侧的 Tunnel 记录不受影响，可随时重新部署。
 
@@ -161,9 +162,20 @@ jsDelivr 的 `gh/` 只代理 GitHub 仓库内容，**不代理 Release 资产**�
 修改脚本中的 `SCRIPT_MIRROR_DEFAULT` 及备用地址为你自己的仓库地址。脚本使用 POSIX `sh`，推荐这样启动：
 
 ```sh
-curl -fsSL 'https://你的脚本地址/cloudflared.sh' -o /tmp/cloudflared.sh && sh /tmp/cloudflared.sh
+curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
 ```
 
 ## 许可证
 
 个人 / 服务器运维自用。二次分发请保留脚本头部说明。
+
+
+## 快捷命令 `a` 报错排查
+
+快捷命令固定从以下地址获取脚本：
+
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' | sh
+```
+
+如果运行 `a` 出现 `curl: (3) URL using bad/illegal format or missing URL`，通常是旧版快捷入口保存了空地址或错误地址。请先用上面的命令运行最新版，在菜单中选择 **5）更新脚本 / 快捷入口**，重新生成 `/usr/local/bin/a`。

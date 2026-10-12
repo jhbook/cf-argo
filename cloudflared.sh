@@ -1,12 +1,12 @@
 #!/bin/sh
 
 # ============================================================
-# Cloudflared Token Tunnel 管理菜单（v8）
+# Cloudflared Token Tunnel 管理菜单（v8.1）
 #
 # 基于 v3 改造，新增：
 #   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
 #   - 快捷命令 a：首次运行自动安装，之后输入 a 即可打开菜单；
-#     先下载到临时文件并校验，再执行，避免 curl | sh 占用交互输入
+#     使用 curl | sh 执行远程脚本，交互输入从 /dev/tty 读取
 #   - Token 持久化：保存到 /etc/cloudflared/token，重新部署时自动复用；
 #     卸载时一并清除，保证卸载干净
 #   - 卸载时连同快捷命令 a（/usr/local/bin/a）一并删除，卸载即干净
@@ -24,7 +24,7 @@
 # 常量
 # ============================================================
 
-SCRIPT_VERSION="v8"
+SCRIPT_VERSION="8.1"
 CLOUDFLARED_BIN="/usr/local/bin/cloudflared"
 LOG_FILE="/var/log/cloudflared.log"
 TOKEN_FILE="/etc/cloudflared/token"
@@ -91,35 +91,22 @@ detect_arch() {
 # 安装快捷命令 a：快捷命令始终通过 curl | sh 远程启动；交互输入从 /dev/tty 读取
 ensure_shortcut() {
     need_root || return 1
-    SHORTCUT_URL=""
-    TMP_A="$(mktemp /tmp/a_install.XXXXXX 2>/dev/null)" || {
-        echo "[-] 无法创建临时文件"
-        return 1
-    }
 
-    for mirror in "${SCRIPT_MIRROR:-$SCRIPT_MIRROR_DEFAULT}" "$SCRIPT_MIRROR_BACKUP1" "$SCRIPT_MIRROR_BACKUP2" "$SCRIPT_MIRROR_BACKUP3"; do
-        if curl -fsSL --connect-timeout 15 --max-time 60 "$mirror" -o "$TMP_A" \
-            && [ -s "$TMP_A" ] \
-            && grep -q "Cloudflared 管理菜单" "$TMP_A"; then
-            SHORTCUT_URL="$mirror"
-            break
-        fi
-    done
-    rm -f "$TMP_A"
-
-    if [ -z "$SHORTCUT_URL" ]; then
-        echo "[-] 无法验证远程脚本，快捷命令安装失败"
+    # 固定使用仓库中的 raw URL，避免把空值/占位符写进快捷入口。
+    SCRIPT_URL="https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh"
+    if ! curl -fsSL --connect-timeout 15 --max-time 60 "$SCRIPT_URL" | grep -q "Cloudflared 管理菜单"; then
+        echo "[-] 无法验证远程脚本：$SCRIPT_URL"
+        echo "    请确认仓库地址正确且远程文件可访问"
         return 1
     fi
 
-    cat > /usr/local/bin/a <<EOF
+    cat > /usr/local/bin/a <<'EOF'
 #!/bin/sh
-# Cloudflared 管理菜单远程快捷入口
-SCRIPT_URL='$SHORTCUT_URL'
-curl -fsSL "$SCRIPT_URL" | sh -s -- "$@"
+SCRIPT_URL='https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh'
+exec curl -fsSL "$SCRIPT_URL" | sh -s -- "$@"
 EOF
     chmod 755 /usr/local/bin/a
-    echo "[+] 快捷命令 a 安装完成：运行 a 即可下载并进入远程交互菜单"
+    echo "[+] 快捷命令 a 已安装：运行 a 即可打开远程管理菜单"
 }
 
 
@@ -496,11 +483,11 @@ uninstall_cloudflared() {
     echo "[+] Token 文件已删除（/etc/cloudflared/token）"
 
     # 快捷命令 a 一并清除，卸载即干净
-    rm -f /usr/local/bin/a
-    echo "[+] 快捷命令 a 已删除（/usr/local/bin/a）"
+    rm -f /usr/local/bin/a /usr/local/bin/cloudflared.sh
+    echo "[+] 管理脚本及快捷入口已删除（/usr/local/bin/a、/usr/local/bin/cloudflared.sh，如存在）"
 
     echo ""
-    echo "[+] cloudflared 已彻底卸载，Cloudflare 面板 Tunnel 未受影响"
+    echo "[+] Cloudflared、管理脚本及快捷入口已彻底卸载，Cloudflare 面板 Tunnel 未受影响"
 }
 
 
@@ -562,7 +549,7 @@ show_menu() {
     fi
     echo "  Cloudflared 状态：$(sb_status)"
     echo ""
-    echo "  1) 部署 / 更新 Cloudflared"
+    echo "  1) 安装 / 更新 Cloudflared 二进制（并配置/启动 Tunnel）"
     echo "  2) 重启服务"
     echo "  3) 查看日志（最近 50 行）"
     echo "  4) 卸载 Cloudflared"

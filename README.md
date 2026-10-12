@@ -1,4 +1,4 @@
-# Cloudflared Token Tunnel 一键管理脚本（v4）
+# Cloudflared Token Tunnel 一键管理脚本（v7）
 
 一个面向 Cloudflare Tunnel（Token 模式）的**一键部署 + 菜单化管理**脚本。支持国内服务器多源加速下载，卸载即干净（连 Token 与快捷命令一起删除）。
 
@@ -7,10 +7,12 @@
 - **一键部署**：自动识别系统与 CPU 架构，多源降级下载 cloudflared 二进制，创建服务并启动
 - **交互式菜单**：部署 / 重启 / 日志 / 卸载 / 重装快捷命令 / 更新脚本 一体化管理
 - **菜单实时状态**：打开菜单即显示 `运行中（版本）/ 已停止 / 未安装`
-- **快捷命令 `a`**：部署成功后自动安装，之后输入 `a` 即可随时打开菜单；支持 `a 1`、`a status` 等参数直达
+- **POSIX `sh` 兼容**：使用 `#!/bin/sh`，面向 Alpine BusyBox `ash`，同时支持 Debian / Ubuntu 的 `/bin/sh`
+- **快捷命令 `a`**：首次通过远程命令启动时自动安装 `/usr/local/bin/a`，之后输入 `a` 即可通过临时文件下载、校验后启动远程菜单
 - **Token 持久化**：保存到 `/etc/cloudflared/token`（600 权限），重装自动复用；卸载时一并清除
 - **卸载即干净**：停止并移除服务、删除二进制 / 日志 / logrotate 配置 / Token / 快捷命令 `a`，一次清空
-- **更新脚本**：从镜像拉取最新版脚本并替换，`a update` 即可升级
+- **版本显示**：菜单显示管理脚本版本与已安装的 Cloudflared 版本
+- **更新脚本**：验证远程脚本可用并刷新快捷入口，菜单选 `6` 或执行 `a update`
 
 ## 系统要求
 
@@ -24,42 +26,44 @@
 
 ## 快速开始
 
-一键安装（任意方式运行均可，推荐）：
+推荐的一键安装方式（POSIX `sh`，适用于 Alpine / Debian / Ubuntu）：
 
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh)
+```sh
+curl -fsSL 'https://git.jhbook.eu.org/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' -o /tmp/cloudflared.sh && sh /tmp/cloudflared.sh
 ```
 
-备用加速地址（国内服务器更快）：
+如果代理地址不可用，可尝试 GitHub Raw 直连：
 
-```bash
-bash <(curl -sL https://git.jhbook.eu.org/https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh)
+```sh
+curl -fsSL 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh' -o /tmp/cloudflared.sh && sh /tmp/cloudflared.sh
 ```
 
-或下载到本地运行：
+也可以下载到本地运行：
 
-```bash
-curl -sL -o cloudflared.sh https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh
-chmod +x cloudflared.sh && sudo ./cloudflared.sh
+```sh
+curl -fsSL -o cloudflared.sh 'https://raw.githubusercontent.com/jhbook/cf-argo/refs/heads/main/cloudflared.sh'
+chmod +x cloudflared.sh
+sh ./cloudflared.sh
 ```
 
-首次进入选择 `1` 部署，按提示粘贴 Token 即可。部署成功后自动安装快捷命令 `a`，以后直接输入 `a` 管理。
-
+首次运行会尝试安装快捷命令 `a`，随后进入交互菜单。部署 Cloudflared 需要 root 权限；非 root 用户请先使用 `sudo -i` 切换到 root，再执行安装命令。安装完成后输入 `a` 即可重新打开菜单。
 ## 菜单说明
 
 ```
 ============================================
-        Cloudflared 管理菜单 v4
+        Cloudflared 管理菜单 v7
 ============================================
 
-  Cloudflared 状态：运行中（版本）/ 已停止 / 未安装   ← 实时检测
+  脚本版本：v7
+  Cloudflared 版本：已安装版本 / 未安装
+  Cloudflared 状态：运行中（版本）/ 已停止 / 未安装
 
   1) 部署 / 更新 Cloudflared   安装/升级二进制、配置 Token、创建服务、装快捷命令
   2) 重启服务
   3) 查看日志（最近 50 行）
   4) 卸载 Cloudflared          彻底卸载（见下文）
   5) 重新安装快捷命令 a        从镜像重新拉取安装
-  6) 更新脚本                  从镜像拉取最新版脚本，替换 /usr/local/bin/a
+  6) 更新快捷入口              验证远程脚本并刷新 /usr/local/bin/a
   0) 退出
 ```
 
@@ -101,14 +105,14 @@ Token 会持久化到 `/etc/cloudflared/token`（600 权限），下次部署自
 
 下载后三重校验：`file` 类型检查（拦截 HTML 错误页）→ 打印实际 SHA256（可对照官方 Release 页核对）→ `--version` 可执行验证。
 
-### 脚本自身镜像（装 `a` / 更新脚本用，四源自动降级）
+### 脚本自身镜像（安装 `a` / 更新快捷入口用，四源自动降级）
 
 1. `git.jhbook.eu.org` 代理 GitHub raw（优先，国内快 + 即时最新）
 2. `ghproxy.net` 代理 GitHub raw（备用）
 3. jsDelivr CDN
 4. GitHub raw 直连（兜底）
 
-> 注意：jsDelivr 有 CDN 缓存延迟，仓库更新后可能短暂返回旧版；脚本内置内容校验（含「Cloudflared 管理菜单」标识才算有效），命中旧版会自动切下一个源。
+> 注意：jsDelivr 可能存在 CDN 缓存延迟。脚本会检查下载内容是否包含「Cloudflared 管理菜单」标识；快捷命令 `a` 本身是一个远程启动入口，每次执行都会先下载到临时文件并校验，再用 `sh` 执行，避免管道占用交互输入导致菜单循环打印。
 
 ## 卸载说明
 
@@ -153,13 +157,13 @@ jsDelivr 的 `gh/` 只代理 GitHub 仓库内容，**不代理 Release 资产**�
 脚本会依次尝试 3 个二进制源。全部失败通常是外网连通 / DNS 问题，检查后再选菜单 1 重试。
 
 **Q：快捷命令 `a` 是怎么来的？**
-部署成功后脚本按镜像顺序下载最新版到 `/usr/local/bin/a`，与运行方式无关（兼容 `bash <(curl ...)` 管道运行）。丢失时菜单选 5 重装。
+首次运行脚本时会验证一个可用的远程脚本地址，并将远程启动入口写入 `/usr/local/bin/a`。之后输入 `a` 会先将远程脚本下载到临时文件并校验，再执行脚本文件。这样菜单的 `read` 会从终端读取用户输入，不会误读管道中的脚本内容。菜单选 5 可重新安装快捷入口，选 6 可刷新入口地址。
 
 **Q：如何 fork 后自用？**
-改脚本内 `SCRIPT_MIRRORS` 四个地址为你自己的仓库地址；或用环境变量覆盖（不修改脚本本体）：
+修改脚本中的 `SCRIPT_MIRROR_DEFAULT` 及备用地址为你自己的仓库地址。脚本使用 POSIX `sh`，推荐这样启动：
 
-```bash
-SCRIPT_MIRROR=https://你的地址 bash <(curl -sL 你的地址)
+```sh
+curl -fsSL 'https://你的脚本地址/cloudflared.sh' -o /tmp/cloudflared.sh && sh /tmp/cloudflared.sh
 ```
 
 ## 许可证

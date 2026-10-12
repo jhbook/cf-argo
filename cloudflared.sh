@@ -1,12 +1,12 @@
 #!/bin/sh
 
 # ============================================================
-# Cloudflared Token Tunnel 管理菜单（v6）
+# Cloudflared Token Tunnel 管理菜单（v7）
 #
 # 基于 v3 改造，新增：
 #   - 交互式菜单：部署/状态/日志/重启/卸载 一体化管理
-#   - 快捷命令 a：部署成功后自动安装，之后输入 a 即可打开菜单；
-#     统一从镜像（SCRIPT_MIRRORS 多源降级）顺序下载，不区分运行方式
+#   - 快捷命令 a：首次运行自动安装，之后输入 a 即可打开菜单；
+#     先下载到临时文件并校验，再执行，避免 curl | sh 占用交互输入
 #   - Token 持久化：保存到 /etc/cloudflared/token，重新部署时自动复用；
 #     卸载时一并清除，保证卸载干净
 #   - 卸载时连同快捷命令 a（/usr/local/bin/a）一并删除，卸载即干净
@@ -24,7 +24,7 @@
 # 常量
 # ============================================================
 
-SCRIPT_VERSION="v6"
+SCRIPT_VERSION="v7"
 CLOUDFLARED_BIN="/usr/local/bin/cloudflared"
 LOG_FILE="/var/log/cloudflared.log"
 TOKEN_FILE="/etc/cloudflared/token"
@@ -115,10 +115,23 @@ ensure_shortcut() {
     cat > /usr/local/bin/a <<EOF
 #!/bin/sh
 # Cloudflared 管理菜单远程快捷入口
-curl -fsSL '$SHORTCUT_URL' | sh
+# 先下载到临时文件，再执行；不要使用 curl | sh，否则菜单 read 可能读到脚本内容而循环打印。
+set -u
+SCRIPT_URL='$SHORTCUT_URL'
+TMP_SCRIPT="$(mktemp /tmp/cloudflared-menu.XXXXXX)" || exit 1
+trap 'rm -f "$TMP_SCRIPT"' EXIT HUP INT TERM
+if ! curl -fsSL --connect-timeout 15 --max-time 120 "$SCRIPT_URL" -o "$TMP_SCRIPT"; then
+    echo "[-] 下载管理脚本失败：$SCRIPT_URL" >&2
+    exit 1
+fi
+if [ ! -s "$TMP_SCRIPT" ] || ! grep -q 'Cloudflared 管理菜单' "$TMP_SCRIPT"; then
+    echo "[-] 下载内容校验失败，拒绝执行" >&2
+    exit 1
+fi
+sh "$TMP_SCRIPT" "$@"
 EOF
     chmod 755 /usr/local/bin/a
-    echo "[+] 快捷命令 a 安装完成：运行 a 即可获取并进入远程交互菜单"
+    echo "[+] 快捷命令 a 安装完成：运行 a 即可下载并进入远程交互菜单"
 }
 
 
@@ -566,13 +579,13 @@ show_menu() {
     echo "  3) 查看日志（最近 50 行）"
     echo "  4) 卸载 Cloudflared"
     echo "  5) 重新安装快捷命令 a"
-    echo "  6) 更新快捷入口（curl | sh）"
+    echo "  6) 更新快捷入口（远程更新快捷入口）"
     echo "  0) 退出"
     echo ""
 }
 
 main() {
-    # 首次通过 curl | sh 运行时，自动安装快捷命令 a；安装后继续进入交互菜单。
+    # 首次运行时，自动安装快捷命令 a；安装后继续进入交互菜单。
     # 已有快捷入口时不重复写入，避免每次启动都覆盖文件。
     if [ "$(id -u)" = "0" ] && [ ! -x /usr/local/bin/a ]; then
         ensure_shortcut || echo "[!] 快捷命令 a 安装失败，但仍可继续使用当前菜单"
